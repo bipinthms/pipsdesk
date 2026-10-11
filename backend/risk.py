@@ -66,6 +66,8 @@ class RiskSettings(BaseModel):
     initial_balance: float | None = Field(None, gt=0)
     max_risk_per_trade_pct: float = Field(1.0, gt=0, le=100)
     require_stop_loss: bool = True
+    # Honour the per-order "no stop loss" override. Off: every order needs a stop.
+    allow_no_sl_override: bool = False
     max_open_positions: int = Field(3, ge=1, le=100)
     max_total_lots: float = Field(5.0, gt=0)
     # Hard ceiling of 30/min: this app is for manual trading only.
@@ -524,8 +526,11 @@ class RiskEngine:
         # --- stop loss presence and side ---------------------------------------------------
         buy = candidate.side == "buy"
         if candidate.sl is None:
-            if s.require_stop_loss and not intent.allow_no_sl:
-                violations.append("A stop loss is required. Set one, or explicitly override.")
+            if s.require_stop_loss and not (intent.allow_no_sl and s.allow_no_sl_override):
+                violations.append(
+                    "A stop loss is required."
+                    + ("" if s.allow_no_sl_override else " Orders without one are off in Settings.")
+                )
             else:
                 warnings.append("No stop loss: the potential loss on this trade is unlimited.")
         elif intent.action in ("open", "pending", "modify_order") and (

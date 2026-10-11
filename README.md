@@ -201,7 +201,7 @@ Every order action passes `RiskEngine.evaluate` (`backend/risk.py`) before it re
 | Day reset | 00:00 server time | Any `HH:MM` and timezone (`server` or an IANA timezone name such as `Europe/Prague`). The trading day only moves forward, and a changed schedule starts at its next reset, so the day's anchor is never re-taken mid-day |
 | Max drawdown | 10%, static | From **Initial balance**; if that's blank, from the account's first deposit in MT5 history. In live mode, new orders are blocked when neither is known (mock mode falls back to the first balance seen). `trailing` mode follows the equity high-water mark |
 | Worst case | always on | Blocks an order if every open SL, every pending order filled then stopped, and this order's SL (plus commission) together would breach either limit |
-| Risk per trade | 1% of balance | A stop loss is required unless explicitly overridden per order |
+| Risk per trade | 1% of balance | A stop loss is required. A per-order "no stop loss" override exists only when **Allow orders without a stop loss** is on in Settings (off by default), and such orders always show the confirmation, even in one-click mode |
 | Exposure | 3 positions, 5 lots | Pending orders count towards both |
 | Rate limit | 5 actions/min | Hard ceiling of 30/min |
 | News blackout | ±2 min | Around events you enter |

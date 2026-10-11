@@ -120,7 +120,7 @@ class TestStopLoss:
         assert_blocked(make().evaluate(buy(sl=None), ctx()), "stop loss is required")
 
     def test_override_allows_with_warning(self):
-        d = make().evaluate(buy(sl=None, allow_no_sl=True), ctx())
+        d = make(allow_no_sl_override=True).evaluate(buy(sl=None, allow_no_sl=True), ctx())
         assert d.allowed
         assert any("unlimited" in w for w in d.warnings)
         assert d.trade_risk is None
@@ -447,7 +447,14 @@ class TestModifications:
 
     def test_removing_stop_requires_override(self):
         assert_blocked(make().evaluate(OrderIntent("modify_position", ticket=1, sl=None), ctx(pos())), "stop loss is required")
-        assert make().evaluate(OrderIntent("modify_position", ticket=1, sl=None, allow_no_sl=True), ctx(pos())).allowed
+        assert make(allow_no_sl_override=True).evaluate(
+            OrderIntent("modify_position", ticket=1, sl=None, allow_no_sl=True), ctx(pos())
+        ).allowed
+
+    @pytest.mark.parametrize("intent", [buy(sl=None, allow_no_sl=True), OrderIntent("modify_position", ticket=1, sl=None, allow_no_sl=True)])
+    def test_override_is_refused_unless_enabled_in_settings(self, intent):
+        assert not RiskSettings().allow_no_sl_override
+        assert_blocked(make().evaluate(intent, ctx(pos())), "Orders without one are off in Settings")
 
     def test_moving_sl_into_profit_is_fine(self):
         d = make().evaluate(OrderIntent("modify_position", ticket=1, sl=1.1020), ctx(pos()))

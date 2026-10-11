@@ -269,6 +269,8 @@ export interface RiskSettings {
   initial_balance: number | null
   max_risk_per_trade_pct: number
   require_stop_loss: boolean
+  /** Honour the per-order "no stop loss" override (off by default). */
+  allow_no_sl_override: boolean
   max_open_positions: number
   max_total_lots: number
   max_actions_per_minute: number

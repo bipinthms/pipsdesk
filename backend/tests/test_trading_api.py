@@ -61,7 +61,19 @@ def test_risk_block_is_422_journaled_and_nothing_sent(client):
     assert client.get("/risk/status").json()["actions_last_minute"] == 0  # blocked attempts aren't sent
 
 
-def test_no_sl_override_goes_through_with_warning(client):
+def allow_no_sl(client):
+    s = client.get("/risk/settings").json()
+    client.put("/risk/settings", json={**s, "allow_no_sl_override": True}, headers=H)
+
+
+def test_no_sl_override_is_off_by_default(client):
+    r = client.post("/orders", json={"symbol": "EURUSD", "side": "buy", "volume": 0.1, "allow_no_sl": True}, headers=H)
+    assert r.status_code == 422 and "off in Settings" in r.json()["detail"]
+    assert client.get("/positions").json() == []
+
+
+def test_no_sl_override_goes_through_with_warning_when_enabled(client):
+    allow_no_sl(client)
     r = client.post("/orders", json={"symbol": "EURUSD", "side": "buy", "volume": 0.1, "allow_no_sl": True}, headers=H)
     assert r.status_code == 200
     assert any("unlimited" in w for w in r.json()["warnings"])
@@ -148,6 +160,7 @@ def test_partial_and_full_close(client):
 
 
 def test_rate_limit_blocks_new_orders_but_not_closes(client):
+    allow_no_sl(client)
     for _ in range(3):
         assert market(client, volume=0.1).status_code == 200
     t = client.get("/positions").json()[0]["ticket"]

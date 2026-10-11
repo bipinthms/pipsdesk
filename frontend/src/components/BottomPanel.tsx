@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api } from '../api/client'
 import { useStream } from '../api/stream'
-import type { Deal, JournalEntry, JournalStatus, PendingOrder, Position, SymbolInfo } from '../api/types'
+import type { Deal, JournalEntry, JournalStatus, PendingOrder, Position, RiskSettings, SymbolInfo } from '../api/types'
 import { expectedRemovals, trade } from '../lib/actions'
 import { money, price as fmtPrice, serverTime, signedMoney } from '../lib/format'
 import { pipsBetween, roundVolume } from '../lib/trading'
@@ -13,6 +13,8 @@ type Tab = 'positions' | 'orders' | 'history' | 'journal'
 
 interface Props {
   symbols: SymbolInfo[]
+  /** Risk settings: whether the "no stop loss" override is offered. */
+  settings?: RiskSettings
   onSelectSymbol: (s: string) => void
   /** Collapsed: only the tab bar shows; clicking a tab expands it again. */
   collapsed?: boolean
@@ -56,7 +58,7 @@ const sideClass = (s: string | null) => (s === 'buy' ? 'text-up' : s === 'sell' 
 // Modals with inputs
 // ---------------------------------------------------------------------------
 
-function useStopsEditor(bySymbol: Map<string, SymbolInfo>) {
+function useStopsEditor(bySymbol: Map<string, SymbolInfo>, allowNoSlOverride: boolean) {
   const { confirm } = useConfirm()
 
   return (target: { kind: 'position'; p: Position } | { kind: 'order'; o: PendingOrder }) => {
@@ -101,7 +103,7 @@ function useStopsEditor(bySymbol: Map<string, SymbolInfo>) {
             {input('sl', 'Stop loss')}
             {input('tp', 'Take profit')}
           </div>
-          {v.sl.trim() === '' && (
+          {v.sl.trim() === '' && allowNoSlOverride && (
             <label className="flex items-center gap-1.5 text-[11px] text-warn">
               <input type="checkbox" checked={v.allowNoSl} onChange={(e) => setV({ ...v, allowNoSl: e.target.checked })} />
               Remove the stop loss (override)
@@ -195,9 +197,15 @@ function useCloser(bySymbol: Map<string, SymbolInfo>) {
 // Tabs
 // ---------------------------------------------------------------------------
 
-function PositionsTab({ bySymbol, onSelectSymbol }: { bySymbol: Map<string, SymbolInfo>; onSelectSymbol: (s: string) => void }) {
+interface TabProps {
+  bySymbol: Map<string, SymbolInfo>
+  onSelectSymbol: (s: string) => void
+  allowNoSlOverride: boolean
+}
+
+function PositionsTab({ bySymbol, onSelectSymbol, allowNoSlOverride }: TabProps) {
   const positions = useStream((s) => s.positions)
-  const edit = useStopsEditor(bySymbol)
+  const edit = useStopsEditor(bySymbol, allowNoSlOverride)
   const close = useCloser(bySymbol)
   return (
     <Table head={['Symbol', 'Ticket', 'Side', 'Volume', 'Open', 'Current', 'SL', 'TP', 'Swap', 'P/L', 'Opened', '']} empty={positions.length === 0 && 'No open positions'}>
@@ -241,9 +249,9 @@ const TYPE_LABEL: Record<PendingOrder['type'], string> = {
   buy_limit: 'buy limit', sell_limit: 'sell limit', buy_stop: 'buy stop', sell_stop: 'sell stop',
 }
 
-function OrdersTab({ bySymbol, onSelectSymbol }: { bySymbol: Map<string, SymbolInfo>; onSelectSymbol: (s: string) => void }) {
+function OrdersTab({ bySymbol, onSelectSymbol, allowNoSlOverride }: TabProps) {
   const orders = useStream((s) => s.orders)
-  const edit = useStopsEditor(bySymbol)
+  const edit = useStopsEditor(bySymbol, allowNoSlOverride)
   const { confirm } = useConfirm()
   const cancel = (o: PendingOrder) =>
     void confirm({
@@ -499,7 +507,8 @@ function JournalTab() {
 
 // ---------------------------------------------------------------------------
 
-export function BottomPanel({ symbols, onSelectSymbol, collapsed = false, onCollapsedChange }: Props) {
+export function BottomPanel({ symbols, settings, onSelectSymbol, collapsed = false, onCollapsedChange }: Props) {
+  const allowNoSlOverride = !!settings?.allow_no_sl_override
   const [tab, setTab] = useState<Tab>('positions')
   const positions = useStream((s) => s.positions)
   const orders = useStream((s) => s.orders)
@@ -577,8 +586,8 @@ export function BottomPanel({ symbols, onSelectSymbol, collapsed = false, onColl
         </div>
       </div>
       <div className={`min-h-0 flex-1 overflow-auto ${collapsed ? 'hidden' : ''}`}>
-        {tab === 'positions' && <PositionsTab bySymbol={bySymbol} onSelectSymbol={onSelectSymbol} />}
-        {tab === 'orders' && <OrdersTab bySymbol={bySymbol} onSelectSymbol={onSelectSymbol} />}
+        {tab === 'positions' && <PositionsTab bySymbol={bySymbol} onSelectSymbol={onSelectSymbol} allowNoSlOverride={allowNoSlOverride} />}
+        {tab === 'orders' && <OrdersTab bySymbol={bySymbol} onSelectSymbol={onSelectSymbol} allowNoSlOverride={allowNoSlOverride} />}
         {tab === 'history' && <HistoryTab bySymbol={bySymbol} />}
         {tab === 'journal' && <JournalTab />}
       </div>

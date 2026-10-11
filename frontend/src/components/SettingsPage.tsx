@@ -18,7 +18,7 @@ interface FieldDef {
   suffix?: string
   optional?: boolean
   /** Which direction relaxes the rule: flagged when saving. */
-  looser?: 'up' | 'down' | 'off'
+  looser?: 'up' | 'down' | 'off' | 'on'
 }
 
 const SECTIONS: [string, FieldDef[]][] = [
@@ -39,7 +39,9 @@ const SECTIONS: [string, FieldDef[]][] = [
   ]],
   ['Per trade', [
     { key: 'max_risk_per_trade_pct', label: 'Max risk per trade', kind: 'number', step: 0.1, suffix: '%', looser: 'up' },
-    { key: 'require_stop_loss', label: 'Require a stop loss (override per order)', kind: 'bool', looser: 'off' },
+    { key: 'require_stop_loss', label: 'Require a stop loss', kind: 'bool', looser: 'off' },
+    { key: 'allow_no_sl_override', label: 'Allow orders without a stop loss (per-order override)', kind: 'bool', looser: 'on',
+      hint: 'Off: every order needs a stop. On: the order panel offers an override, and such orders always show the confirmation.' },
     { key: 'commission_per_lot', label: 'Commission per lot (round turn)', kind: 'number', step: 0.5, suffix: '$', looser: 'down',
       hint: 'Added to every risk and worst-case calculation.' },
   ]],
@@ -83,6 +85,7 @@ function display(f: FieldDef, v: unknown): string {
 
 function isLooser(f: FieldDef, from: unknown, to: unknown): boolean {
   if (f.looser === 'off') return from === true && to === false
+  if (f.looser === 'on') return from === false && to === true
   if (typeof from !== 'number' || typeof to !== 'number') return false
   return f.looser === 'up' ? to > from : f.looser === 'down' ? to < from : false
 }

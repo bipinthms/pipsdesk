@@ -173,6 +173,7 @@ function Desk() {
           <section className={`shrink-0 border-t border-line bg-panel ${collapsed.bottom ? '' : 'h-60'}`}>
             <BottomPanel
               symbols={symbols}
+              settings={riskSettings}
               onSelectSymbol={setSymbol}
               collapsed={collapsed.bottom}
               onCollapsedChange={(c) => setPanel('bottom', c)}

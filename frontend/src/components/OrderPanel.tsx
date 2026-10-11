@@ -88,7 +88,9 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
   const [stopMode, setStopMode] = useState<'pips' | 'price'>('pips')
   const [slIn, setSlIn] = useState('')
   const [tpIn, setTpIn] = useState('')
-  const [allowNoSl, setAllowNoSl] = useState(false)
+  const [overrideTicked, setAllowNoSl] = useState(false)
+  // The override only counts while Settings allows it.
+  const allowNoSl = overrideTicked && !!settings?.allow_no_sl_override
   const [check, setCheck] = useState<RiskDecision | null>(null)
   const [sending, setSending] = useState(false)
 
@@ -249,6 +251,7 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
     const pips = (p: number | null | undefined) => (p ? ` (${pipsBetween(validEntry, p, info).toFixed(1)} pips)` : '')
     void confirm({
       key: 'order', // one order at a time, whatever its symbol or size
+      always: req.sl === null, // no stop loss: the warning is always shown, even in one-click mode
       title: `${label}: ${volume} ${symbol}`,
       tone: side,
       confirmLabel: `${side === 'buy' ? 'Buy' : 'Sell'} ${volume} ${symbol}`,
@@ -364,9 +367,9 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
             </Field>
           </div>
           {stopMode === 'pips' && info && <span className="text-[10px] text-muted">1 pip = {pip}</span>}
-          {sl === null && (settings?.require_stop_loss ?? true) && (
+          {sl === null && (settings?.require_stop_loss ?? true) && settings?.allow_no_sl_override && (
             <label className="flex items-center gap-1.5 text-[11px] text-warn">
-              <input type="checkbox" checked={allowNoSl} onChange={(e) => setAllowNoSl(e.target.checked)} />
+              <input type="checkbox" checked={overrideTicked} onChange={(e) => setAllowNoSl(e.target.checked)} />
               Trade without a stop loss (override)
             </label>
           )}
