@@ -7,6 +7,7 @@ import {
   pipSize,
   roundVolume,
   slFromPips,
+  snapToTick,
   tpFromPips,
 } from './trading'
 
@@ -102,5 +103,16 @@ describe('pendingPriceError', () => {
     expect(pendingPriceError('sell', 'stop', 1.11, 1.0998, 1.1)).toMatch(/below/)
     expect(pendingPriceError('buy', 'market', 0, 1, 1)).toBeNull()
     expect(pendingPriceError('buy', 'limit', 0, 1, 1)).toMatch(/Enter/)
+  })
+})
+
+describe('snapToTick', () => {
+  const NAS = { tick_size: 0.25, point: 0.01, digits: 2 }
+  it('snaps to a coarse tick grid', () => {
+    expect(snapToTick(19500.13, NAS)).toBe(19500.25)
+    expect(snapToTick(19500.1, NAS)).toBe(19500)
+  })
+  it('is a plain digits round when the tick is one point', () => {
+    expect(snapToTick(1.0849999999, { tick_size: 0.00001, point: 0.00001, digits: 5 })).toBe(1.085)
   })
 })

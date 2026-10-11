@@ -166,10 +166,15 @@ class _Spec:
     volume_max: float = 50.0
     volume_step: float = 0.01
     ticks_per_sec: float = 2.0
+    tick_size: float | None = None  # price grid, when coarser than one point
 
     @property
     def point(self) -> float:
         return 10.0**-self.digits
+
+    @property
+    def tick(self) -> float:
+        return self.tick_size or self.point
 
     @property
     def seed(self) -> int:
@@ -187,7 +192,8 @@ _SPECS: dict[str, _Spec] = {
         _Spec("USDJPY", "US Dollar vs Japanese Yen", 3, 100_000, 150.00, 0.006, 12, "USD", "JPY", 100),
         _Spec("XAUUSD", "Gold vs US Dollar", 2, 100, 2400.0, 0.010, 25, "XAU", "USD", 30, stops_level=10),
         _Spec("US30", "Dow Jones 30 Index", 2, 1, 42_000.0, 0.009, 200, "USD", "USD", 20, volume_min=0.1, volume_step=0.1),
-        _Spec("NAS100", "Nasdaq 100 Index", 2, 1, 19_500.0, 0.012, 150, "USD", "USD", 20, volume_min=0.1, volume_step=0.1),
+        _Spec("NAS100", "Nasdaq 100 Index", 2, 1, 19_500.0, 0.012, 150, "USD", "USD", 20, volume_min=0.1, volume_step=0.1,
+              tick_size=0.25),
         _Spec("BTCUSD", "Bitcoin vs US Dollar", 2, 1, 65_000.0, 0.030, 3000, "BTC", "USD", 2, volume_max=5.0),
     )
 }
@@ -230,7 +236,16 @@ def _mid(symbol: str, t: float) -> float:
 
 
 def _bid(spec: _Spec, t: float) -> float:
-    return round(_mid(spec.name, t), spec.digits)
+    return _on_tick(spec, _mid(spec.name, t))
+
+
+def _on_tick(spec: _Spec, price: float) -> float:
+    return round(round(price / spec.tick) * spec.tick, spec.digits)
+
+
+def _on_grid(spec: _Spec, price: float) -> bool:
+    """Real servers reject prices off the symbol's tick grid (invalid price / stops)."""
+    return not price or abs(price / spec.tick - round(price / spec.tick)) < 1e-6
 
 
 def _bar(spec: _Spec, t_open: int, tf_sec: int, now: float) -> dict:
@@ -474,11 +489,11 @@ def _to_usd(amount: float, currency: str, now: float) -> float:
 def _symbol_info(spec: _Spec, now: float):
     bid = _bid(spec, now)
     ask = round(bid + spec.spread_points * spec.point, spec.digits)
-    tick_value = _to_usd(spec.point * spec.contract_size, spec.currency_profit, now)
+    tick_value = _to_usd(spec.tick * spec.contract_size, spec.currency_profit, now)
     trade_mode = SYMBOL_TRADE_MODE_FULL
     return SymbolInfo(
         spec.name, spec.description, f"Mock\\{spec.name}", spec.digits, spec.point,
-        spec.spread_points, spec.contract_size, spec.point, tick_value, spec.volume_min,
+        spec.spread_points, spec.contract_size, spec.tick, tick_value, spec.volume_min,
         spec.volume_max, spec.volume_step, spec.stops_level, 0, trade_mode,
         SYMBOL_FILLING_FOK | SYMBOL_FILLING_IOC, spec.currency_base, spec.currency_profit,
         spec.currency_base, bid, ask, True, True,
@@ -855,6 +870,9 @@ def order_send(request: dict):
 
         sl = float(request.get("sl") or 0.0)
         tp = float(request.get("tp") or 0.0)
+        if not (_on_grid(spec, sl) and _on_grid(spec, tp)):
+            return _result(TRADE_RETCODE_INVALID_STOPS, request, bid=bid, ask=ask, comment="Invalid stops")
+        sl, tp = (_on_tick(spec, sl) if sl else 0.0), (_on_tick(spec, tp) if tp else 0.0)
         volume = float(request.get("volume") or 0.0)
         magic = int(request.get("magic") or 0)
         comment = str(request.get("comment") or "")
@@ -901,9 +919,10 @@ def order_send(request: dict):
                 return _result(TRADE_RETCODE_INVALID, request, comment="Invalid request")
             if not _volume_ok(spec, volume):
                 return _result(TRADE_RETCODE_INVALID_VOLUME, request, comment="Invalid volume")
-            price = round(float(request.get("price") or 0.0), spec.digits)
-            if not _pending_price_ok(spec, otype, price, bid, ask):
+            price = float(request.get("price") or 0.0)
+            if not _on_grid(spec, price) or not _pending_price_ok(spec, otype, _on_tick(spec, price), bid, ask):
                 return _result(TRADE_RETCODE_INVALID_PRICE, request, bid=bid, ask=ask, comment="Invalid price")
+            price = _on_tick(spec, price)
             buy = otype in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP)
             if not _stops_ok(spec, buy, sl, tp, price):
                 return _result(TRADE_RETCODE_INVALID_STOPS, request, bid=bid, ask=ask, comment="Invalid stops")
@@ -928,7 +947,10 @@ def order_send(request: dict):
             o = _S.orders.get(request.get("order", 0))
             if o is None:
                 return _result(TRADE_RETCODE_INVALID_ORDER, request, comment="Invalid order")
-            price = round(float(request.get("price") or o.price_open), spec.digits)
+            price = float(request.get("price") or o.price_open)
+            if not _on_grid(spec, price):
+                return _result(TRADE_RETCODE_INVALID_PRICE, request, bid=bid, ask=ask, comment="Invalid price")
+            price = _on_tick(spec, price)
             if (price, sl, tp) == (o.price_open, o.sl, o.tp):
                 return _result(TRADE_RETCODE_NO_CHANGES, request, comment="No changes")
             if not _pending_price_ok(spec, o.type, price, bid, ask):

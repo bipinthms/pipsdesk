@@ -13,7 +13,7 @@ import {
   pendingPriceError,
   pipsBetween,
   pipSize,
-  roundPrice,
+  snapToTick,
   slFromPips,
   tpFromPips,
 } from '../lib/trading'
@@ -241,9 +241,9 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
       side,
       order_type: type,
       volume,
-      price: type === 'market' ? null : roundPrice(validEntry, digits),
-      sl: sl === null ? null : roundPrice(sl, digits),
-      tp: tp === null ? null : roundPrice(tp, digits),
+      price: type === 'market' ? null : snapToTick(validEntry, info),
+      sl: sl === null ? null : snapToTick(sl, info),
+      tp: tp === null ? null : snapToTick(tp, info),
       allow_no_sl: allowNoSl,
       deviation: DEVIATION_POINTS,
     }

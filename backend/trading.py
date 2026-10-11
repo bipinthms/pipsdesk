@@ -35,6 +35,7 @@ from backend.mt5_bridge import (
 )
 from backend.risk import Exposure, OrderIntent, RiskDecision
 from backend.risk_service import RiskService
+from backend.symbols import InvalidOrder, snap_close_volume, snap_price, snap_stop_loss, snap_volume
 
 log = logging.getLogger(__name__)
 
@@ -221,11 +222,30 @@ class TradingService:
 
     # -- actions -------------------------------------------------------------------
 
+    def _snapped_stops(
+        self, symbol: str, side: schemas.Side, sl: float | None, tp: float | None
+    ) -> tuple[float | None, float | None]:
+        """SL/TP on the symbol's tick grid (the SL towards entry). Never blocks a modification:
+        if the symbol's spec can't be read, the values go as entered."""
+        try:
+            info = self._bridge.symbol_info(symbol)
+        except MT5Error as exc:
+            log.warning("sending SL/TP unsnapped: %s", exc)
+            return sl, tp
+        return (None if sl is None else snap_stop_loss(sl, side, info)), (None if tp is None else snap_price(tp, info))
+
     def place(self, req: schemas.OrderRequest) -> schemas.TradeResponse:
         b = self._bridge
         info = b.symbol_info(req.symbol)
         if not info.trade_allowed:
             raise TradeRejected(RETCODE_MESSAGES[10017], 10017)
+        # What the risk engine checks is exactly what MT5 receives.
+        req = req.model_copy(update={
+            "volume": snap_volume(req.volume, info),
+            "price": None if req.price is None else snap_price(req.price, info),
+            "sl": None if req.sl is None else snap_stop_loss(req.sl, req.side, info),
+            "tp": None if req.tp is None else snap_price(req.tp, info),
+        })
         journal = {"symbol": req.symbol, "side": req.side, "volume": req.volume, "sl": req.sl, "tp": req.tp,
                    "price": req.price}
         extra: dict[str, Any] = {"order_type": req.order_type}
@@ -255,6 +275,8 @@ class TradingService:
 
     def modify_position(self, ticket: int, req: schemas.ModifyPositionRequest) -> schemas.TradeResponse:
         p = self._find_position(ticket)
+        sl, tp = self._snapped_stops(p.symbol, p.side, req.sl, req.tp)
+        req = req.model_copy(update={"sl": sl, "tp": tp})
         intent = OrderIntent("modify_position", p.symbol, p.side, p.volume, p.price_open, req.sl, req.tp,
                              ticket=ticket, allow_no_sl=req.allow_no_sl)
         journal = {"symbol": p.symbol, "side": p.side, "volume": p.volume, "sl": req.sl, "tp": req.tp, "ticket": ticket}
@@ -263,6 +285,9 @@ class TradingService:
     def modify_order(self, ticket: int, req: schemas.ModifyOrderRequest) -> schemas.TradeResponse:
         o = self._find_order(ticket)
         side = "buy" if o.type.startswith("buy") else "sell"
+        sl, tp = self._snapped_stops(o.symbol, side, req.sl, req.tp)
+        price = snap_price(req.price, self._bridge.symbol_info(o.symbol))
+        req = req.model_copy(update={"price": price, "sl": sl, "tp": tp})
         intent = OrderIntent("modify_order", o.symbol, side, o.volume, req.price, req.sl, req.tp,
                              ticket=ticket, allow_no_sl=req.allow_no_sl)
         journal = {"symbol": o.symbol, "side": side, "volume": o.volume, "price": req.price,
@@ -273,6 +298,8 @@ class TradingService:
         p = self._find_position(ticket)
         if volume is not None and volume > p.volume + 1e-9:
             raise TradeRejected(RETCODE_MESSAGES[10038], 10038)
+        if volume is not None and volume < p.volume - 1e-9:
+            volume = snap_close_volume(volume, self._bridge.symbol_info(p.symbol))
         intent = OrderIntent("close", p.symbol, p.side, volume or p.volume, ticket=ticket)
         journal = {"symbol": p.symbol, "side": p.side, "volume": volume or p.volume, "ticket": ticket, "note": note}
         return self._execute(intent, lambda: self._bridge.close_position(ticket, volume), journal)

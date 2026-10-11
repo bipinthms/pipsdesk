@@ -24,16 +24,25 @@ export function roundPrice(price: number, digits: number): number {
   return Number(price.toFixed(digits))
 }
 
+/**
+ * Nearest price on the symbol's tick grid (e.g. 0.25 on some indices), as the server
+ * would send it. The server rounds a stop loss towards entry; on the grid that's a no-op.
+ */
+export function snapToTick(price: number, info: Pick<Spec, 'tick_size' | 'point' | 'digits'>): number {
+  const tick = info.tick_size || info.point
+  return roundPrice(Math.round(price / tick) * tick, info.digits)
+}
+
 /** Stop-loss price `pips` away from entry, on the losing side. */
 export function slFromPips(side: Side, entry: number, pips: number, info: Spec): number {
   const d = pips * pipSize(info)
-  return roundPrice(side === 'buy' ? entry - d : entry + d, info.digits)
+  return snapToTick(side === 'buy' ? entry - d : entry + d, info)
 }
 
 /** Take-profit price `pips` away from entry, on the winning side. */
 export function tpFromPips(side: Side, entry: number, pips: number, info: Spec): number {
   const d = pips * pipSize(info)
-  return roundPrice(side === 'buy' ? entry + d : entry - d, info.digits)
+  return snapToTick(side === 'buy' ? entry + d : entry - d, info)
 }
 
 export function pipsBetween(a: number, b: number, info: Spec): number {

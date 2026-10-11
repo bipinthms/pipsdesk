@@ -371,3 +371,38 @@ def test_journal_failure_after_a_fill_is_not_an_error(client, monkeypatch):
 
 def test_client_order_id_is_validated(client):
     assert market(client, volume=0.1, client_order_id="bad id!").status_code == 422
+
+
+# --- values snapped to the symbol's grid before the check -------------------------------
+
+
+def test_off_grid_values_are_snapped_before_the_check(client):
+    """NAS100 trades on a 0.25 grid; the server would reject 19,4xx.13 as invalid stops."""
+    bid, ask = quote(client, "NAS100")
+    body = {"symbol": "NAS100", "side": "buy", "volume": 0.15, "sl": round(ask - 50.13, 2), "tp": round(ask + 80.1, 2)}
+    r = client.post("/orders", json=body, headers=H)
+    assert r.status_code == 200, r.text
+    (pos,) = client.get("/positions").json()
+    assert pos["volume"] == 0.1  # rounded down to the 0.1 step
+    assert pos["sl"] % 0.25 == 0 and pos["sl"] > body["sl"]  # towards entry: less risk, not more
+    assert pos["tp"] % 0.25 == 0
+    (entry,) = journal(client)
+    assert entry["sl"] == pos["sl"] and entry["volume"] == 0.1  # journal shows what was sent
+
+
+def test_volume_below_minimum_is_refused_before_sending(client):
+    bid, ask = quote(client, "NAS100")
+    r = client.post("/orders", json={"symbol": "NAS100", "side": "buy", "volume": 0.05, "sl": ask - 50}, headers=H)
+    assert r.status_code == 422 and "minimum" in r.json()["detail"]
+    assert journal(client) == []
+
+
+def test_modifications_are_snapped_too(client):
+    bid, ask = quote(client, "NAS100")
+    client.post("/orders", json={"symbol": "NAS100", "side": "buy", "volume": 0.2, "sl": ask - 50}, headers=H)
+    (pos,) = client.get("/positions").json()
+    r = client.patch(f"/positions/{pos['ticket']}", json={"sl": round(pos["sl"] + 10.1, 2)}, headers=H)
+    assert r.status_code == 200, r.text
+    assert client.get("/positions").json()[0]["sl"] == pos["sl"] + 10.25
+    r = client.delete(f"/positions/{pos['ticket']}", params={"volume": 0.15}, headers=H)
+    assert r.status_code == 200 and client.get("/positions").json()[0]["volume"] == pytest.approx(0.1)

@@ -42,6 +42,7 @@ from backend.mt5_bridge import MT5Bridge, MT5Error, MT5Unavailable, OrderOutcome
 from backend.risk import RiskDecision, RiskSettings, RiskStatus
 from backend.risk_service import RiskService
 from backend.stream import StreamHub
+from backend.symbols import InvalidOrder
 from backend.trading import RiskBlocked, TradingService
 
 log = logging.getLogger(__name__)
@@ -147,6 +148,10 @@ def create_app(
     async def _rejected(_: Request, exc: TradeRejected) -> JSONResponse:
         body = schemas.TradeErrorResponse(detail=str(exc), kind="broker", retcode=exc.retcode)
         return JSONResponse(body.model_dump(), status_code=409)
+
+    @app.exception_handler(InvalidOrder)
+    async def _invalid(_: Request, exc: InvalidOrder) -> JSONResponse:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
 
     @app.exception_handler(OrderOutcomeUnknown)
     async def _unknown(_: Request, exc: OrderOutcomeUnknown) -> JSONResponse:
