@@ -247,6 +247,7 @@ function OrdersTab({ bySymbol, onSelectSymbol }: { bySymbol: Map<string, SymbolI
   const { confirm } = useConfirm()
   const cancel = (o: PendingOrder) =>
     void confirm({
+      key: `cancel:${o.ticket}`,
       title: `Cancel ${TYPE_LABEL[o.type]} ${o.symbol} #${o.ticket}`,
       tone: 'danger',
       confirmLabel: 'Cancel order',

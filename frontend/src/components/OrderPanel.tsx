@@ -90,6 +90,7 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
   const [tpIn, setTpIn] = useState('')
   const [allowNoSl, setAllowNoSl] = useState(false)
   const [check, setCheck] = useState<RiskDecision | null>(null)
+  const [sending, setSending] = useState(false)
 
   // Default risk %: half the per-trade maximum.
   useEffect(() => {
@@ -245,6 +246,7 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
     const label = orderLabel(side, type)
     const pips = (p: number | null | undefined) => (p ? ` (${pipsBetween(validEntry, p, info).toFixed(1)} pips)` : '')
     void confirm({
+      key: 'order', // one order at a time, whatever its symbol or size
       title: `${label}: ${volume} ${symbol}`,
       tone: side,
       confirmLabel: `${side === 'buy' ? 'Buy' : 'Sell'} ${volume} ${symbol}`,
@@ -264,13 +266,18 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
         // beyond DEVIATION_POINTS comes back as a requote instead of a surprise fill.
         const q = stream.ticks[symbol]
         const body = type === 'market' && q ? { ...req, price: side === 'buy' ? q.ask : q.bid } : req
-        await trade(
-          () => api.placeOrder(body),
-          (r) =>
-            type === 'market'
-              ? `${side === 'buy' ? 'Bought' : 'Sold'} ${r.result.volume} ${symbol} @ ${fmtPrice(r.result.price, digits)} (#${r.result.order})`
-              : `${label} #${r.result.order} placed @ ${fmtPrice(req.price ?? 0, digits)}`,
-        )
+        setSending(true)
+        try {
+          await trade(
+            () => api.placeOrder(body),
+            (r) =>
+              type === 'market'
+                ? `${side === 'buy' ? 'Bought' : 'Sold'} ${r.result.volume} ${symbol} @ ${fmtPrice(r.result.price, digits)} (#${r.result.order})`
+                : `${label} #${r.result.order} placed @ ${fmtPrice(req.price ?? 0, digits)}`,
+          )
+        } finally {
+          setSending(false)
+        }
         // The order now exists as real chart lines: clear the draft so its lines disappear.
         setAllowNoSl(false)
         setSlIn('')
@@ -388,15 +395,17 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
         <button
           type="button"
           onClick={review}
-          disabled={!canSubmit}
+          disabled={!canSubmit || sending}
           title={inputError ?? (blocked ? 'Blocked by risk rules' : undefined)}
           className={`w-full rounded py-2 font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40 ${
             side === 'buy' ? 'bg-up' : 'bg-down'
           }`}
         >
-          {inputError && inputError !== 'Waiting for prices…'
-            ? inputError
-            : `${oneClick ? '' : 'Review '}${orderLabel(side, type)}${volume ? ` · ${volume}` : ''}`}
+          {sending
+            ? 'Sending…'
+            : inputError && inputError !== 'Waiting for prices…'
+              ? inputError
+              : `${oneClick ? '' : 'Review '}${orderLabel(side, type)}${volume ? ` · ${volume}` : ''}`}
         </button>
       </div>
     </div>

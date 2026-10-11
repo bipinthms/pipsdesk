@@ -1,5 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from 'react'
 import { ApiError } from '../api/client'
+import { InFlight } from '../lib/inflight'
+import { toast } from './Toasts'
 
 export type Tone = 'buy' | 'sell' | 'danger' | 'neutral'
 
@@ -17,6 +19,8 @@ export interface ConfirmSpec {
   always?: boolean
   /** Called when the dialog is dismissed without a successful run. */
   onCancel?: () => void
+  /** Identifies the action for the double-submit guard in one-click mode (default: the title). */
+  key?: string
 }
 
 interface ConfirmContextValue {
@@ -52,11 +56,14 @@ export function ConfirmProvider({ children }: { children: ReactNode }) {
   // One-click trading is deliberately not persisted: every session starts with confirmations on.
   const [oneClick, setOneClick] = useState(false)
   const [spec, setSpec] = useState<ConfirmSpec | null>(null)
+  const inFlight = useRef(new InFlight())
 
   const confirm = useCallback(
     async (s: ConfirmSpec) => {
       if (oneClick && !s.always && !s.body) {
-        await s.run().catch(() => {}) // errors are surfaced by the action's own toast
+        // A double-click or key repeat must never send the same order twice.
+        const sent = await inFlight.current.run(s.key ?? s.title, s.run).catch(() => true) // errors: the action's own toast
+        if (!sent) toast('warn', 'Still sending the previous request. Wait for it to finish.')
         return
       }
       setSpec((prev) => {
@@ -79,6 +86,8 @@ function ConfirmModal({ spec, onClose }: { spec: ConfirmSpec; onClose: () => voi
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string>()
   const cancelRef = useRef<HTMLButtonElement>(null)
+  // Set synchronously, so a second click can't slip in before `busy` re-renders the button.
+  const running = useRef(false)
 
   useEffect(() => {
     cancelRef.current?.focus() // safe default: Enter cancels, it never confirms by accident
@@ -88,12 +97,14 @@ function ConfirmModal({ spec, onClose }: { spec: ConfirmSpec; onClose: () => voi
   })
 
   const cancel = () => {
-    if (busy) return
+    if (running.current) return
     spec.onCancel?.()
     onClose()
   }
 
   const go = async () => {
+    if (running.current) return
+    running.current = true
     setBusy(true)
     setError(undefined)
     try {
@@ -102,6 +113,7 @@ function ConfirmModal({ spec, onClose }: { spec: ConfirmSpec; onClose: () => voi
     } catch (e) {
       setError(errorText(e))
     } finally {
+      running.current = false
       setBusy(false)
     }
   }
