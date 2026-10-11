@@ -317,7 +317,7 @@ class _State:
         self.terminal_down = False
         self.last_error: tuple[int, str] = (RES_S_OK, "Success")
         self.server_tz = ZoneInfo("Europe/Athens")
-        self.closed_symbols: set[str] = set()
+        self.closed_symbols: dict[str, float] = {}  # symbol -> server time it closed (ticks stop there)
         self.quirks: dict[str, bool] = {}
         self.reset(100_000.0)
 
@@ -388,7 +388,10 @@ def _mock_set_terminal_down(down: bool) -> None:
 
 def _mock_set_market_closed(symbol: str, closed: bool) -> None:
     with _S.lock:
-        (_S.closed_symbols.add if closed else _S.closed_symbols.discard)(symbol)
+        if closed:
+            _S.closed_symbols.setdefault(symbol, _server_now())
+        else:
+            _S.closed_symbols.pop(symbol, None)
 
 
 def _mock_switch_account(login: int, server: str, balance: float) -> None:
@@ -540,7 +543,7 @@ def symbol_info_tick(symbol: str):
             _S.last_error = (RES_E_NOT_FOUND, "Symbol not found")
             return None
         _process()
-        now = _server_now()
+        now = _S.closed_symbols.get(symbol, _server_now())  # a closed market's last tick stays put
         bid = _bid(spec, now)
         ask = round(bid + spec.spread_points * spec.point, spec.digits)
         return Tick(int(now), bid, ask, 0.0, 0, int(now * 1000), 6, 0.0)

@@ -10,7 +10,8 @@ import hashlib
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
+from dataclasses import replace
 
 from backend import schemas
 from backend.db import Database, NewsEvent
@@ -38,6 +39,9 @@ WRONG_ACCOUNT = (
     "The terminal is logged into a different account from MT5_LOGIN in backend/.env. "
     "Log the terminal into the configured account, or update .env and restart."
 )
+# A market order is refused on a quote older than this: the market is closed or the feed stalled,
+# and the real fill could be anywhere.
+STALE_QUOTE_S = 60.0
 # How long an order this app just sent is counted before MT5 lists it. A real terminal
 # can take a moment to show a new position or order after order_send returns.
 RECENT_SEND_TTL_S = 10.0
@@ -223,13 +227,16 @@ class RiskService:
 
     # -- checks -------------------------------------------------------------------
 
-    def evaluate(self, intent: OrderIntent, ctx: RiskContext | None = None) -> RiskDecision:
+    def evaluate(self, intent: OrderIntent, ctx: RiskContext | None = None, blocks: Sequence[str] = ()) -> RiskDecision:
+        """`blocks`: conditions found by the caller that block new risk (e.g. a stale quote)."""
         with self.lock:
             if intent.action in NEVER_BLOCKED:
                 # Closing and cancelling must work even when account data, prices or
                 # the server clock can't be read: don't fetch any of it.
                 return self.engine.evaluate(intent, None)
             ctx = ctx or self.context()
+            if blocks:
+                ctx = replace(ctx, blocks=[*ctx.blocks, *blocks])
             before = self.engine.state.model_copy()
             decision = self.engine.evaluate(intent, ctx)
             self._persist_state(before)
@@ -248,6 +255,17 @@ class RiskService:
         tickets = {e.ticket for e in listed}
         self._recent = [(e, until) for e, until in self._recent if until > now and e.ticket not in tickets]
         return [e for e, _ in self._recent]
+
+    def stale_quote(self, tick: schemas.Tick) -> str | None:
+        """Why a market order can't trust this quote, or None."""
+        now = self.server_now()
+        if now is None:
+            return None
+        age = now - tick.time_msc / 1000
+        if age <= STALE_QUOTE_S:
+            return None
+        return (f"{tick.symbol}'s last price is {age / 60:.0f} min old: the market may be closed or the "
+                "price feed stalled, so the fill could be far from it.")
 
     def intent_from_check(self, req: schemas.OrderCheckRequest) -> OrderIntent:
         """Fill in the market price for market orders."""

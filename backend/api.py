@@ -339,9 +339,10 @@ def _register_routes(app: FastAPI) -> None:
         return status
 
     @app.post("/risk/check", response_model=RiskDecision, responses=_ERRORS)
-    def risk_check(risk: Risk, body: schemas.OrderCheckRequest) -> RiskDecision:
+    def risk_check(risk: Risk, bridge: Bridge, body: schemas.OrderCheckRequest) -> RiskDecision:
         """Dry run: what the risk engine would say about this action. Sends nothing to MT5."""
-        return risk.evaluate(risk.intent_from_check(body))
+        stale = risk.stale_quote(bridge.tick(body.symbol)) if body.action == "open" and body.symbol else None
+        return risk.evaluate(risk.intent_from_check(body), blocks=[stale] if stale else ())
 
     @app.get("/risk/news", response_model=list[schemas.NewsEventOut])
     def list_news(risk: Risk) -> list[schemas.NewsEventOut]:

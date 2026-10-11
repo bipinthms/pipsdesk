@@ -92,6 +92,7 @@ class TradingService:
         *,
         tag: str | None = None,
         request_id: str | None = None,
+        blocks: list[str] | None = None,
     ) -> schemas.TradeResponse:
         with self._risk.lock:
             extra = {**(extra or {}), **({"tag": tag} if tag else {})}
@@ -99,7 +100,7 @@ class TradingService:
                 earlier = self._earlier_attempt(request_id, tag, intent, journal, extra)
                 if earlier is not None:
                     return earlier
-            decision = self._risk.evaluate(intent)
+            decision = self._risk.evaluate(intent, blocks=blocks or ())
             base = {"action": intent.action, "risk_amount": decision.trade_risk, **journal}
             if not decision.allowed:
                 self._journal(status="blocked", reason="; ".join(decision.violations),
@@ -130,6 +131,9 @@ class TradingService:
                 raise
             else:
                 self._risk.record_action()
+                slipped = self._slippage_warning(intent, result)
+                if slipped:
+                    warnings.append(slipped)
             response = self._accepted(intent, result, base, extra, warnings)
             if request_id is not None:
                 self._requests[request_id] = (self._clock(), response)
@@ -157,6 +161,28 @@ class TradingService:
             warnings.append("The order went through, but its journal entry couldn't be saved. See the backend log.")
         log.info("%s accepted: ticket=%s", intent.action, fields["ticket"])
         return schemas.TradeResponse(result=result, warnings=warnings)
+
+    def _slippage_warning(self, intent: OrderIntent, result: schemas.TradeResult) -> str | None:
+        """Under Market execution MT5 ignores `deviation`: the fill can be worse than the quote that
+        was checked. Say so when the loss at the stop, from the real fill, is over the per-trade limit."""
+        if intent.action != "open" or intent.side is None or intent.sl is None or not result.price:
+            return None
+        if result.price == intent.entry:
+            return None
+        s = self._risk.settings
+        volume = result.volume or intent.volume
+        try:
+            loss = -self._bridge.calc_profit(intent.side, intent.symbol, volume, result.price, intent.sl)
+            balance = self._bridge.account_info().balance
+        except MT5Error:
+            return None
+        loss += s.commission_per_lot * volume
+        cap = balance * s.max_risk_per_trade_pct / 100
+        if loss <= cap + 0.005:
+            return None
+        return (f"Filled at {result.price} instead of {intent.entry}: the loss at the stop is now "
+                f"${loss:,.2f} ({loss / balance * 100:.2f}%), over the {s.max_risk_per_trade_pct:g}% limit. "
+                "Consider tightening the stop.")
 
     def _count_possible_order(self, intent: OrderIntent) -> None:
         """No clear answer: count the order for a while, in case it was placed."""
@@ -267,10 +293,13 @@ class TradingService:
             intent = OrderIntent("open", req.symbol, req.side, req.volume, entry, req.sl, req.tp,
                                  allow_no_sl=req.allow_no_sl)
             journal["price"] = req.price or entry
+            stale = self._risk.stale_quote(tick)
+            blocks = [stale] if stale else []
             send = lambda: b.market_order(  # noqa: E731
                 req.symbol, req.side, req.volume, req.sl, req.tp, req.deviation, comment, price=req.price
             )
         else:
+            blocks = []
             if req.price is None:
                 raise TradeRejected("A price is required for limit and stop orders.", 10015)
             pending_type = _PENDING[(req.side, req.order_type)]
@@ -280,7 +309,7 @@ class TradingService:
             send = lambda: b.pending_order(  # noqa: E731
                 req.symbol, pending_type, req.volume, req.price, req.sl, req.tp, comment  # type: ignore[arg-type]
             )
-        return self._execute(intent, send, journal, extra, tag=tag, request_id=req.client_order_id)
+        return self._execute(intent, send, journal, extra, tag=tag, request_id=req.client_order_id, blocks=blocks)
 
     def modify_position(self, ticket: int, req: schemas.ModifyPositionRequest) -> schemas.TradeResponse:
         p = self._find_position(ticket)

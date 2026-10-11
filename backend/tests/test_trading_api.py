@@ -434,3 +434,46 @@ def test_flatten_cancels_stop_limit_orders_too(client, mock):
     r = client.post("/positions/flatten", headers=H).json()
     assert r == {"closed": [], "cancelled": [ticket], "errors": []}
     assert client.app.state.bridge.working_orders() == []
+
+
+# --- quotes and fills --------------------------------------------------------------------
+
+
+def _learn_server_clock(client, clock):
+    risk = client.app.state.risk
+    risk.server_now()
+    clock.advance(1)
+    risk.server_now()  # EURUSD ticked: the server's UTC offset is known
+
+
+def test_market_order_on_a_stale_quote_is_blocked(client, mock, clock):
+    _learn_server_clock(client, clock)
+    mock._mock_set_market_closed("GBPUSD", True)  # its last tick stays put from now on
+    clock.advance(120)
+    bid = client.app.state.bridge.tick("GBPUSD").bid
+    body = {"symbol": "GBPUSD", "side": "sell", "volume": 0.1, "sl": round(bid + 0.005, 5)}
+    r = client.post("/orders", json=body, headers=H)
+    assert r.status_code == 422 and "GBPUSD's last price is 2 min old" in r.json()["detail"]
+    check = client.post("/risk/check", json={"action": "open", **body}, headers=H).json()
+    assert not check["allowed"] and "2 min old" in check["violations"][0]
+    assert journal(client)[0]["status"] == "blocked"
+
+
+def test_fresh_quote_is_fine(client, clock):
+    _learn_server_clock(client, clock)
+    assert market(client, volume=0.1).status_code == 200
+
+
+def test_slippage_past_the_per_trade_limit_is_reported(client, monkeypatch):
+    bridge = client.app.state.bridge
+    real = bridge.market_order
+
+    def slipped(*args, **kwargs):
+        r = real(*args, **kwargs)
+        return r.model_copy(update={"price": round(r.price + 0.0020, 5)})  # filled 20 pips worse
+
+    monkeypatch.setattr(bridge, "market_order", slipped)
+    r = market(client, volume=1.0, sl_pips=90)  # $900 at the quote, $1,100 from the fill
+    assert r.status_code == 200
+    assert any("over the 1% limit" in w for w in r.json()["warnings"])
+    assert journal(client)[0]["details"]["warnings"]
