@@ -88,7 +88,7 @@ class RiskService:
         b = self._bridge
         account = b.account_info()
         exposures = [
-            Exposure("position", p.ticket, p.symbol, p.side, p.volume, p.price_open, p.sl, p.profit + p.swap)
+            Exposure("position", p.ticket, p.symbol, p.side, p.volume, p.price_open, p.sl, p.profit + p.swap, p.swap)
             for p in b.positions()
         ] + [
             Exposure("pending", o.ticket, o.symbol, "buy" if o.type.startswith("buy") else "sell", o.volume, o.price_open, o.sl)

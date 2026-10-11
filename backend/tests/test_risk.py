@@ -615,3 +615,32 @@ class TestInitialBalance:
         e.state.initial_balance_deposit = 100_000
         d = e.evaluate(buy(volume=0.1), ctx(balance=95_000))
         assert d.allowed and d.drawdown_floor == pytest.approx(90_000)
+
+
+class TestWorstCaseAccuracy:
+    @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 0.0])
+    def test_unpriceable_stop_blocks_the_order(self, bad):
+        e = RiskEngine(RiskSettings(initial_balance=BAL, news_blackout_enabled=False), None, lambda *_: bad)
+        assert_blocked(e.evaluate(buy(volume=0.1), ctx()), "couldn't value the stop loss on EURUSD")
+
+    def test_unpriceable_open_exposure_blocks_new_risk_but_not_tightening(self):
+        def calc(side, symbol, volume, open_, close):
+            return float("nan") if symbol == "XAUUSD" else profit(side, symbol, volume, open_, close)
+
+        gold = Exposure("position", 7, "XAUUSD", "buy", 1.0, 2400.0, 2390.0)
+        e = RiskEngine(RiskSettings(initial_balance=BAL, news_blackout_enabled=False), None, calc)
+        assert_blocked(e.evaluate(buy(volume=0.1), ctx(gold)), "XAUUSD")
+        assert e.evaluate(OrderIntent("modify_position", ticket=7, sl=2395.0), ctx(gold)).allowed
+
+    def test_accrued_negative_swap_counts(self):
+        e = make()
+        e.observe(BAL, BAL, NOW, SERVER)
+        held = Exposure("position", 1, "EURUSD", "buy", 1.0, 1.1000, 1.0950, floating_pnl=-450.0, swap=-400.0)
+        d = e.evaluate(buy(volume=0.1), ctx(held, equity=99_550))
+        assert d.worst_case_equity == pytest.approx(BAL - 500 - 400 - 50)
+
+    def test_positive_swap_is_not_relied_on(self):
+        e = make()
+        e.observe(BAL, BAL, NOW, SERVER)
+        held = Exposure("position", 1, "EURUSD", "buy", 1.0, 1.1000, 1.0950, floating_pnl=300.0, swap=300.0)
+        assert e.evaluate(buy(volume=0.1), ctx(held)).worst_case_equity == pytest.approx(BAL - 500 - 50)

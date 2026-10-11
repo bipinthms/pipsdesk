@@ -131,7 +131,12 @@ class Exposure:
     volume: float
     entry: float  # open price, or trigger price for pending orders
     sl: float | None
-    floating_pnl: float = 0.0  # positions only
+    floating_pnl: float = 0.0  # positions only: profit + swap
+    swap: float = 0.0  # positions only: swap accrued so far, booked when the position closes
+
+
+class UnpricedError(Exception):
+    """MT5 couldn't value a move to a stop (no conversion rate, symbol not priced)."""
 
 
 ActionKind = Literal["open", "pending", "modify_position", "modify_order", "close", "cancel"]
@@ -422,10 +427,17 @@ class RiskEngine:
     # -- money helpers -----------------------------------------------------------
 
     def _pnl_at_sl(self, e: Exposure) -> float | None:
-        """Realised P/L if the stop is hit (negative = loss), commission included. None without SL."""
+        """Realised P/L if the stop is hit (negative = loss), commission included. None without SL.
+
+        Raises UnpricedError when the calculation comes back unusable: NaN or infinite,
+        or exactly zero for a real move (what a missing conversion rate looks like).
+        """
         if e.sl is None:
             return None
-        return self._profit(e.side, e.symbol, e.volume, e.entry, e.sl) - self.settings.commission_per_lot * e.volume
+        raw = self._profit(e.side, e.symbol, e.volume, e.entry, e.sl)
+        if not math.isfinite(raw) or (raw == 0 and e.sl != e.entry and e.volume > 0):
+            raise UnpricedError(f"MT5 couldn't value the stop loss on {e.symbol} (got {raw}), so the risk is unknown.")
+        return raw - self.settings.commission_per_lot * e.volume
 
     def _pnl_at(self, e: Exposure, price: float) -> float:
         return self._profit(e.side, e.symbol, e.volume, e.entry, price) - self.settings.commission_per_lot * e.volume
@@ -495,7 +507,13 @@ class RiskEngine:
             decision.trade_risk = self._risk_or_none(candidate)
             return decision
 
-        new_pnl = self._pnl_at_sl(candidate)
+        others = [e for e in ctx.exposures if existing is None or e.ticket != existing.ticket]
+        try:
+            new_pnl = self._pnl_at_sl(candidate)
+            other_pnls = [self._pnl_at_sl(e) for e in others]
+        except UnpricedError as exc:
+            # Can't size the risk: fail closed.
+            return RiskDecision(allowed=False, violations=[str(exc)], daily_floor=daily_floor, drawdown_floor=dd_floor)
 
         # --- the account itself ----------------------------------------------------------------
         if not self.state.account_confirmed:
@@ -565,17 +583,17 @@ class RiskEngine:
                 )
             if intent.tp is not None:
                 reward = self._pnl_at(candidate, intent.tp)
-                decision.trade_reward = round(reward, 2)
-                decision.reward_risk = round(reward / risk, 2) if risk > 0 else None
+                if math.isfinite(reward):  # display only: a pricing glitch must not break the reply
+                    decision.trade_reward = round(reward, 2)
+                    decision.reward_risk = round(reward / risk, 2) if risk > 0 else None
 
         # --- worst case across everything open -------------------------------------------------------
-        others = [e for e in ctx.exposures if existing is None or e.ticket != existing.ticket]
         worst = ctx.balance
         unbounded = candidate.sl is None
-        for e in [*others, candidate]:
-            pnl = self._pnl_at_sl(e)
+        for e, pnl in [*zip(others, other_pnls, strict=True), (candidate, new_pnl)]:
             if pnl is not None:
-                worst += pnl
+                # Accrued swap is booked when the position closes: a cost counts, a credit is not relied on.
+                worst += pnl + min(0.0, e.swap)
             else:
                 unbounded = True
                 worst += min(0.0, e.floating_pnl)  # best we can do without a stop
