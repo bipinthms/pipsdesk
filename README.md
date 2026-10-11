@@ -181,7 +181,8 @@ Open **Settings** and do the following:
   - Positions: SL/TP edit, full or partial close, **Flatten all**.
   - Pending: edit, cancel.
   - History: deals with net P/L.
-  - Journal: every attempt, filterable, with **notes** (click "+ note") and **Export CSV**.
+  - Journal: every attempt, filterable, with **notes** (click "+ note") and **Export CSV**. Status `unknown` means MT5 gave no clear answer; check Positions before trying again.
+- **Unclear outcomes:** if MT5 or the backend doesn't answer clearly (lost connection, timeout), the order isn't retried. New orders carry a tag (`pd:xxxxxxxx`) in their MT5 comment, so the app looks for them and reports the order as placed when it finds it. Pressing confirm again in the same dialog never places a second order.
 - **Toasts:** fills, rejections with the reason, pending fills, SL/TP closes, disconnects.
 
 ### Settings page
@@ -229,7 +230,7 @@ Every path also works under the `/api` prefix (`/api/account` = `/account`), whi
 | GET | `/symbols` | Symbol specs |
 | GET | `/candles?symbol=&timeframe=&count=&before=` | M1…D1. `count` ≤ 5000. `before` pages back |
 | GET | `/positions`, `/orders` | Open positions, pending orders |
-| POST | `/orders` | Market, limit or stop order with SL/TP. Risk-checked and journaled |
+| POST | `/orders` | Market, limit or stop order with SL/TP. Risk-checked and journaled. Optional `client_order_id`: sending the same id again returns the first result instead of placing a second order |
 | PATCH / DELETE | `/orders/{ticket}` | Modify or cancel a pending order |
 | PATCH / DELETE | `/positions/{ticket}[?volume=]` | Modify SL/TP; close fully or partially |
 | POST | `/positions/flatten` | Close all positions and cancel all orders |
@@ -257,6 +258,7 @@ Every path also works under the `/api` prefix (`/api/account` = `/account`), whi
 | 422 | Blocked by risk rules (`kind: "risk"`, `violations`) or invalid input |
 | 502 | Other MT5 error |
 | 503 | Terminal unavailable |
+| 409 / 502 / 503 with `kind: "unknown"` | The request was sent but MT5 gave no clear answer (no reply, timeout). It may have been executed: check Positions and Orders. Never retried automatically, and journaled as `unknown` |
 
 **Security:**
 - The backend binds to 127.0.0.1.

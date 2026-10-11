@@ -46,7 +46,8 @@ const TONE: Record<Tone, string> = {
 
 export function errorText(e: unknown): string {
   if (e instanceof ApiError) {
-    const prefix = e.kind === 'risk' ? 'Blocked by risk rules: ' : e.kind === 'broker' ? 'Rejected: ' : ''
+    const prefix =
+      e.kind === 'risk' ? 'Blocked by risk rules: ' : e.kind === 'broker' ? 'Rejected: ' : e.kind === 'unknown' ? 'Unclear outcome: ' : ''
     return prefix + (e.violations.length > 1 ? e.violations.join(' ') : e.message)
   }
   return e instanceof Error ? e.message : String(e)

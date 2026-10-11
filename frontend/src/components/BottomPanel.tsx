@@ -368,6 +368,7 @@ const STATUS_STYLE: Record<JournalStatus, string> = {
   blocked: 'text-warn border-warn/40',
   rejected: 'text-down border-down/40',
   error: 'text-down border-down/40',
+  unknown: 'text-warn border-warn',
   info: 'text-muted border-line',
 }
 
@@ -461,6 +462,7 @@ function JournalTab() {
           <option value="blocked">Blocked by risk</option>
           <option value="rejected">Rejected by broker</option>
           <option value="error">Errors</option>
+          <option value="unknown">Unclear outcome</option>
           <option value="info">Info</option>
         </select>
         <button type="button" className={btn} onClick={() => void exportJournal(status)}>

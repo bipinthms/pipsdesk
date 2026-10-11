@@ -38,7 +38,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 from backend import schemas
 from backend.config import Settings, get_settings
 from backend.db import Database
-from backend.mt5_bridge import MT5Bridge, MT5Error, MT5Unavailable, SymbolNotFound, TradeRejected
+from backend.mt5_bridge import MT5Bridge, MT5Error, MT5Unavailable, OrderOutcomeUnknown, SymbolNotFound, TradeRejected
 from backend.risk import RiskDecision, RiskSettings, RiskStatus
 from backend.risk_service import RiskService
 from backend.stream import StreamHub
@@ -98,7 +98,7 @@ def create_app(
         hub = StreamHub(b, settings.stream_interval_ms / 1000, risk)
         app.state.db = database
         app.state.risk = risk
-        app.state.trading = TradingService(b, risk, database)
+        app.state.trading = TradingService(b, risk, database, clock=clock)
         app.state.hub = hub
         if await run_in_threadpool(b.connect):
             with contextlib.suppress(MT5Error):
@@ -144,6 +144,12 @@ def create_app(
     async def _rejected(_: Request, exc: TradeRejected) -> JSONResponse:
         body = schemas.TradeErrorResponse(detail=str(exc), kind="broker", retcode=exc.retcode)
         return JSONResponse(body.model_dump(), status_code=409)
+
+    @app.exception_handler(OrderOutcomeUnknown)
+    async def _unknown(_: Request, exc: OrderOutcomeUnknown) -> JSONResponse:
+        body = schemas.TradeErrorResponse(detail=str(exc), kind="unknown", retcode=exc.retcode)
+        status = 503 if exc.terminal_lost else 409 if exc.retcode else 502
+        return JSONResponse(body.model_dump(), status_code=status)
 
     @app.exception_handler(RiskBlocked)
     async def _blocked(_: Request, exc: RiskBlocked) -> JSONResponse:
@@ -197,7 +203,7 @@ _ERRORS = {
 }
 _TRADE_ERRORS = {
     **_ERRORS,
-    409: {"model": schemas.TradeErrorResponse, "description": "Rejected by the broker"},
+    409: {"model": schemas.TradeErrorResponse, "description": "Rejected by the broker, or no clear answer (kind=unknown)"},
     422: {"model": schemas.TradeErrorResponse, "description": "Blocked by the risk engine (or invalid input)"},
 }
 
@@ -252,7 +258,7 @@ def _register_routes(app: FastAPI) -> None:
         db: Db,
         limit: Annotated[int, Query(ge=1, le=1000)] = 200,
         before_id: int | None = None,
-        status: Literal["accepted", "blocked", "rejected", "error", "info"] | None = None,
+        status: Literal["accepted", "blocked", "rejected", "error", "unknown", "info"] | None = None,
     ) -> list[schemas.JournalOut]:
         return [
             schemas.JournalOut.model_validate({**e.model_dump(), "details": json.loads(e.details or "{}")})

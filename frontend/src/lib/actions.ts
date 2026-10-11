@@ -1,3 +1,4 @@
+import { ApiError } from '../api/client'
 import type { TradeResponse } from '../api/types'
 import { errorText } from '../components/Confirm'
 import { toast } from '../components/Toasts'
@@ -16,7 +17,8 @@ export async function trade(fn: () => Promise<TradeResponse>, success: (r: Trade
     for (const w of r.warnings) toast('warn', w)
     return r
   } catch (e) {
-    toast('error', errorText(e))
+    // An unclear outcome must be read: the order may have been placed.
+    toast('error', errorText(e), e instanceof ApiError && e.kind === 'unknown' ? 20_000 : undefined)
     throw e
   }
 }

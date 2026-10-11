@@ -24,17 +24,23 @@ import type { Drawing } from '../lib/drawings'
 
 const BASE = '/api'
 
+export type ErrorKind = 'risk' | 'broker' | 'unknown'
+const KINDS: readonly unknown[] = ['risk', 'broker', 'unknown'] satisfies ErrorKind[]
+
 export class ApiError extends Error {
   readonly status: number
-  /** 'risk' = blocked by the risk engine, 'broker' = rejected by MT5 / the trade server. */
-  readonly kind: 'risk' | 'broker' | undefined
+  /**
+   * 'risk' = blocked by the risk engine, 'broker' = rejected by MT5 / the trade server,
+   * 'unknown' = sent, but there's no clear answer whether it was executed: never retry blindly.
+   */
+  readonly kind: ErrorKind | undefined
   readonly violations: string[]
   readonly retcode: number | undefined
 
   constructor(status: number, message: string, body?: Record<string, unknown>) {
     super(message)
     this.status = status
-    this.kind = body?.kind === 'risk' || body?.kind === 'broker' ? body.kind : undefined
+    this.kind = KINDS.includes(body?.kind) ? (body!.kind as ErrorKind) : undefined
     this.violations = Array.isArray(body?.violations) ? (body.violations as string[]) : []
     this.retcode = typeof body?.retcode === 'number' ? body.retcode : undefined
   }
@@ -62,6 +68,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       body: body === undefined ? undefined : JSON.stringify(body),
     })
   } catch {
+    // A state-changing request may have reached the backend (and MT5) before the connection failed.
+    if (method !== 'GET') {
+      throw new ApiError(0, 'No reply from the backend: the request may or may not have been executed. Check Positions and Orders before trying again.', { kind: 'unknown' })
+    }
     throw new ApiError(0, 'Backend unreachable. Is the server running?')
   }
   if (!res.ok) {

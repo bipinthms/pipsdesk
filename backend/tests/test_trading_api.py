@@ -251,3 +251,110 @@ def test_a_pending_order_mt5_hasnt_listed_yet_still_counts(client, mock):
     assert client.post("/orders", json=body, headers=H).status_code == 200
     r = client.post("/orders", json=body, headers=H)
     assert r.status_code == 422 and "Total volume" in r.json()["detail"]
+
+
+# --- unclear outcomes and resubmits -------------------------------------------------
+
+
+def _reply_lost(mock, monkeypatch, execute: bool = True):
+    """order_send reaches the server (or not), but the reply never comes back."""
+    real = mock.order_send
+    state = {"error": None}
+
+    def send(request):
+        if execute:
+            real(request)
+        state["error"] = (-10002, "IPC recv failed")
+        return None
+
+    monkeypatch.setattr(mock, "order_send", send)
+    monkeypatch.setattr(mock, "last_error", lambda: state["error"] or (1, "Success"))
+    return lambda: monkeypatch.setattr(mock, "order_send", real)
+
+
+def test_lost_reply_is_reported_as_unknown_not_as_a_failure(client, mock, monkeypatch):
+    _reply_lost(mock, monkeypatch, execute=True)
+    r = market(client, volume=0.1)
+    # The order is tagged, so it's found in MT5 straight away and reported as placed.
+    assert r.status_code == 200, r.text
+    assert any("listed in MT5" in w for w in r.json()["warnings"])
+    (pos,) = client.get("/positions").json()
+    assert pos["comment"].startswith("pd:")
+
+
+def test_unclear_outcome_not_found_is_unknown_and_resubmit_is_safe(client, mock, monkeypatch, clock):
+    restore = _reply_lost(mock, monkeypatch, execute=False)
+    body_id = "3f2c9a1e-7b4d-4c1a-9e2f-0a1b2c3d4e5f"
+    r = market(client, volume=0.1, client_order_id=body_id)
+    assert r.status_code == 503 and r.json()["kind"] == "unknown"
+    assert "may or may not" in r.json()["detail"]
+    (entry,) = journal(client)
+    assert entry["status"] == "unknown" and entry["details"]["tag"].startswith("pd:")
+    restore()
+    clock.advance(1)  # reconnect allowed again
+    # Same id again: not listed in MT5, so it is refused rather than sent a second time.
+    r = market(client, volume=0.1, client_order_id=body_id)
+    assert r.status_code == 502 and r.json()["kind"] == "unknown" and "earlier attempt" in r.json()["detail"]
+    assert client.get("/positions").json() == []
+    assert journal(client, status="unknown")[0]["id"] == entry["id"]
+
+
+def test_unclear_outcome_counts_as_exposure_for_a_while(client, mock, monkeypatch, clock):
+    s = client.get("/risk/settings").json()
+    client.put("/risk/settings", json={**s, "max_open_positions": 1}, headers=H)
+    restore = _reply_lost(mock, monkeypatch, execute=False)
+    assert market(client, volume=0.1).json()["kind"] == "unknown"
+    restore()
+    clock.advance(1)
+    r = market(client, volume=0.1)  # a new order: maybe the first one was placed
+    assert r.status_code == 422 and "Max open positions" in r.json()["detail"]
+    clock.advance(61)
+    assert market(client, volume=0.1).status_code == 200
+
+
+def test_resubmitting_the_same_order_returns_the_first_result(client):
+    body_id = "a1b2c3d4-0000-4000-8000-000000000001"
+    first = market(client, volume=0.1, client_order_id=body_id)
+    again = market(client, volume=0.1, client_order_id=body_id)
+    assert first.status_code == again.status_code == 200
+    assert again.json()["result"] == first.json()["result"]
+    assert any("already sent" in w for w in again.json()["warnings"])
+    assert len(client.get("/positions").json()) == 1
+    assert [e["status"] for e in journal(client)] == ["accepted"]
+
+
+def test_concurrent_resubmits_place_one_order(client):
+    body_id = "a1b2c3d4-0000-4000-8000-000000000002"
+    with ThreadPoolExecutor(4) as pool:
+        codes = list(pool.map(lambda _: market(client, volume=0.1, client_order_id=body_id).status_code, range(4)))
+    assert codes == [200] * 4
+    assert len(client.get("/positions").json()) == 1
+
+
+def test_timeout_retcode_is_unknown(client, mock, monkeypatch):
+    def timeout(request):
+        return mock.OrderSendResult(10012, 0, 0, 0.0, 0.0, 0.0, 0.0, "Timeout", 0, 0, request)
+
+    monkeypatch.setattr(mock, "order_send", timeout)
+    r = market(client, volume=0.1)
+    assert r.status_code == 409 and r.json()["kind"] == "unknown" and r.json()["retcode"] == 10012
+
+
+def test_journal_failure_after_a_fill_is_not_an_error(client, monkeypatch):
+    db = client.app.state.db
+    real = db.journal_add
+
+    def flaky(**fields):
+        if fields.get("status") == "accepted":
+            raise RuntimeError("database is locked")
+        return real(**fields)
+
+    monkeypatch.setattr(db, "journal_add", flaky)
+    r = market(client, volume=0.1)
+    assert r.status_code == 200
+    assert any("journal entry couldn't be saved" in w for w in r.json()["warnings"])
+    assert len(client.get("/positions").json()) == 1
+
+
+def test_client_order_id_is_validated(client):
+    assert market(client, volume=0.1, client_order_id="bad id!").status_code == 422

@@ -50,10 +50,28 @@ class TradeRejected(MT5Error):
         self.retcode = retcode
 
 
+class OrderOutcomeUnknown(MT5Error):
+    """order_send gave no clear answer: the request may or may not have been executed.
+
+    Never retried automatically: retrying could place the order twice.
+    """
+
+    def __init__(self, message: str, retcode: int | None = None, terminal_lost: bool = False) -> None:
+        super().__init__(message)
+        self.retcode = retcode
+        self.terminal_lost = terminal_lost
+
+
 RETCODE_DONE = 10009
 RETCODE_PLACED = 10008
 RETCODE_DONE_PARTIAL = 10010
 _SUCCESS_RETCODES = {RETCODE_PLACED, RETCODE_DONE, RETCODE_DONE_PARTIAL}
+# The trade server answered, but not whether it executed the request.
+_UNKNOWN_RETCODES = {10011, 10012}
+UNKNOWN_OUTCOME = (
+    "No clear answer from MT5: the request may or may not have been executed. "
+    "Check Positions and Orders before trying again."
+)
 
 RETCODE_MESSAGES: dict[int, str] = {
     10004: "Requote: the price changed. Check the new price and try again.",
@@ -312,10 +330,13 @@ class MT5Bridge:
 
     # -- low-level call wrapper --------------------------------------------
 
+    def _ensure_connected(self) -> None:
+        if not self._connected and not (self._backoff.ready(self._clock()) and self.connect()):
+            raise MT5Unavailable(self._last_error or "Not connected to the MT5 terminal.")
+
     def _call(self, name: str, *args: Any, not_found: str | None = None, **kwargs: Any) -> Any:
         with self._lock:
-            if not self._connected and not (self._backoff.ready(self._clock()) and self.connect()):
-                raise MT5Unavailable(self._last_error or "Not connected to the MT5 terminal.")
+            self._ensure_connected()
             result = getattr(self._mt5, name)(*args, **kwargs)
             if result is None:
                 code, message = self._mt5.last_error()
@@ -501,10 +522,30 @@ class MT5Bridge:
     # -- trading ------------------------------------------------------------
 
     def order_send(self, request: dict[str, Any]) -> schemas.TradeResult:
-        """Send a raw trade request. Raises TradeRejected unless the server accepted it."""
+        """Send a raw trade request, exactly once.
+
+        Raises TradeRejected when the server refused it, MT5Unavailable when nothing was
+        sent, and OrderOutcomeUnknown when it was sent but the answer is unclear.
+        """
         log.info("order_send %s", request)  # trade requests never contain credentials
-        r = self._call("order_send", request)
+        with self._lock:
+            self._ensure_connected()  # raises before anything is sent
+            try:
+                r = self._mt5.order_send(request)
+            except Exception as exc:
+                log.exception("order_send raised")
+                raise OrderOutcomeUnknown(f"{UNKNOWN_OUTCOME} ({exc})") from exc
+            if r is None:
+                code, err = self._mt5.last_error()
+                lost = code in _IPC_ERRORS
+                if lost:
+                    self._mark_disconnected(describe_last_error(code, err))
+                log.warning("order_send returned nothing: %s %s", code, err)
+                raise OrderOutcomeUnknown(f"{UNKNOWN_OUTCOME} ({describe_last_error(code, err)})", terminal_lost=lost)
         message = describe_retcode(r.retcode, r.comment)
+        if r.retcode in _UNKNOWN_RETCODES:
+            log.warning("order_send unclear: retcode=%s %s", r.retcode, message)
+            raise OrderOutcomeUnknown(f"{UNKNOWN_OUTCOME} ({message})", retcode=r.retcode)
         if r.retcode not in _SUCCESS_RETCODES:
             log.info("order_send rejected: retcode=%s %s", r.retcode, message)
             raise TradeRejected(message, r.retcode)

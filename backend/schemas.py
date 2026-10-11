@@ -258,7 +258,10 @@ class OrderRequest(BaseModel):
     tp: float | None = Field(default=None, gt=0)
     allow_no_sl: bool = False
     deviation: int = Field(default=20, ge=0, le=1000, description="Max slippage in points (market orders)")
-    comment: str = Field(default="", max_length=24)
+    comment: str = Field(default="", max_length=24)  # after the 11-character order tag; MT5 keeps 31
+    # Optional id chosen by the UI for this order. Sending the same id again returns the
+    # first attempt's result instead of placing the order twice.
+    client_order_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9-]{8,64}$")
 
 
 class ModifyPositionRequest(BaseModel):
@@ -287,7 +290,9 @@ class FlattenResponse(BaseModel):
 
 class TradeErrorResponse(BaseModel):
     detail: str
-    kind: Literal["risk", "broker"]
+    # risk: blocked by the risk engine. broker: rejected by MT5 / the trade server.
+    # unknown: sent, but MT5 gave no clear answer; check positions before retrying.
+    kind: Literal["risk", "broker", "unknown"]
     violations: list[str] = []
     retcode: int | None = None
 
@@ -296,7 +301,7 @@ class JournalOut(BaseModel):
     id: int
     time_utc: float
     action: str
-    status: Literal["accepted", "blocked", "rejected", "error", "info"]
+    status: Literal["accepted", "blocked", "rejected", "error", "unknown", "info"]
     symbol: str | None
     side: str | None
     volume: float | None

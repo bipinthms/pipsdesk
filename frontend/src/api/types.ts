@@ -181,6 +181,8 @@ export interface OrderRequest {
   allow_no_sl?: boolean
   deviation?: number
   comment?: string
+  /** Chosen once per order dialog: resubmitting the same id returns the first result. */
+  client_order_id?: string
 }
 
 export interface ModifyPositionRequest {
@@ -233,7 +235,7 @@ export interface Deal {
   comment: string
 }
 
-export type JournalStatus = 'accepted' | 'blocked' | 'rejected' | 'error' | 'info'
+export type JournalStatus = 'accepted' | 'blocked' | 'rejected' | 'error' | 'unknown' | 'info'
 
 export interface JournalEntry {
   id: number

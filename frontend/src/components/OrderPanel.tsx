@@ -233,6 +233,8 @@ export function OrderPanel({ symbol, info, settings, onCollapse }: Props) {
   const review = () => {
     if (!canSubmit || !info || volume === null || validEntry === null) return
     const req: OrderRequest = {
+      // One id per order dialog: pressing confirm again after an unclear reply can't place it twice.
+      client_order_id: crypto.randomUUID(),
       symbol,
       side,
       order_type: type,
