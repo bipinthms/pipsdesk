@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 from fastapi import WebSocket
 from pydantic import TypeAdapter, ValidationError
@@ -32,6 +33,7 @@ log = logging.getLogger(__name__)
 
 _client_message = TypeAdapter(schemas.ClientMessage)
 SEND_TIMEOUT_S = 2.0
+T = TypeVar("T")
 
 # key -> (comparison value, wire message)
 Snapshot = dict[str, tuple[Any, dict[str, Any]]]
@@ -62,6 +64,7 @@ class StreamHub:
         self._clients: set[StreamClient] = set()
         self._wake = asyncio.Event()
         self._bad_symbols: set[str] = set()
+        self._part_errors: dict[str, str] = {}  # last error logged per snapshot part
 
     # -- client management ---------------------------------------------------
 
@@ -113,7 +116,12 @@ class StreamHub:
         await asyncio.gather(*(self._fan_out(c, snapshot, errors) for c in list(self._clients)))
 
     def _snapshot(self, symbols: set[str], charts: set[tuple[str, str]]) -> tuple[Snapshot, dict[str, str]]:
-        """Runs in a worker thread: gather the current state from MT5."""
+        """Runs in a worker thread: gather the current state from MT5.
+
+        Each part is read on its own, so one failing call (a symbol without prices,
+        an odd reply) doesn't stop the rest of the stream. A lost terminal ends the
+        snapshot early; the next status message reports it.
+        """
         b = self._bridge
         snap: Snapshot = {}
         errors: dict[str, str] = {}
@@ -122,35 +130,53 @@ class StreamHub:
         if not status.connected:
             return snap, errors
         try:
-            account = b.account_info()
-            snap["account"] = (account, schemas.StreamAccount(account=account).model_dump())
-            risk = self._risk.status(account.equity) if self._risk else None
-            if risk is not None:
-                snap["risk"] = (risk, schemas.StreamRisk(risk=risk.model_dump()).model_dump())
-            positions = b.positions()
-            snap["positions"] = (positions, schemas.StreamPositions(positions=positions).model_dump())
-            orders = b.orders()
-            snap["orders"] = (orders, schemas.StreamOrders(orders=orders).model_dump())
+            account = self._read("account", b.account_info)
+            if account is not None:
+                snap["account"] = (account, schemas.StreamAccount(account=account).model_dump())
+                risk = self._risk.status(account.equity) if self._risk else None
+                if risk is not None:
+                    snap["risk"] = (risk, schemas.StreamRisk(risk=risk.model_dump()).model_dump())
+            positions = self._read("positions", b.positions)
+            if positions is not None:
+                snap["positions"] = (positions, schemas.StreamPositions(positions=positions).model_dump())
+            orders = self._read("orders", b.orders)
+            if orders is not None:
+                snap["orders"] = (orders, schemas.StreamOrders(orders=orders).model_dump())
             for sym in sorted(symbols):
                 try:
-                    t = b.tick(sym)
+                    t = self._read(f"tick:{sym}", lambda: b.tick(sym))  # noqa: B023 - called immediately
                 except SymbolNotFound as exc:
                     errors[sym] = str(exc)
                     continue
-                snap[f"tick:{sym}"] = ((t.bid, t.ask), schemas.StreamTick(tick=t).model_dump())
+                if t is not None:
+                    snap[f"tick:{sym}"] = ((t.bid, t.ask), schemas.StreamTick(tick=t).model_dump())
             for sym, tf in sorted(charts):
                 try:
-                    candles = b.candles(sym, tf, 2)
+                    candles = self._read(f"candle:{sym}:{tf}", lambda: b.candles(sym, tf, 2))  # noqa: B023
                 except SymbolNotFound as exc:
                     errors[sym] = str(exc)
                     continue
-                msg = schemas.StreamCandles(symbol=sym, timeframe=tf, candles=candles).model_dump()  # type: ignore[arg-type]
-                snap[f"candle:{sym}:{tf}"] = (candles, msg)
+                if candles is not None:
+                    msg = schemas.StreamCandles(symbol=sym, timeframe=tf, candles=candles).model_dump()  # type: ignore[arg-type]
+                    snap[f"candle:{sym}:{tf}"] = (candles, msg)
         except MT5Unavailable:
             pass  # status message already reflects it on the next tick
-        except MT5Error as exc:
-            log.warning("stream snapshot error: %s", exc)
         return snap, errors
+
+    def _read(self, part: str, fetch: Callable[[], T]) -> T | None:
+        """One part of the snapshot. MT5 errors are logged (once per new message) and skipped;
+        SymbolNotFound and MT5Unavailable propagate."""
+        try:
+            value = fetch()
+        except (SymbolNotFound, MT5Unavailable):
+            raise
+        except MT5Error as exc:
+            if self._part_errors.get(part) != str(exc):
+                log.warning("stream: can't read %s: %s", part, exc)
+            self._part_errors[part] = str(exc)
+            return None
+        self._part_errors.pop(part, None)
+        return value
 
     async def _fan_out(self, client: StreamClient, snap: Snapshot, errors: dict[str, str]) -> None:
         for sym, message in errors.items():

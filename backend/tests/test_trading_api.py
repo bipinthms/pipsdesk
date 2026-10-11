@@ -214,3 +214,11 @@ def test_closing_never_depends_on_the_server_clock_symbol(mock, clock, db):
         flat = c.post("/positions/flatten", headers=H).json()
         assert flat == {"closed": [p2], "cancelled": [o2], "errors": []}
         assert c.get("/positions").json() == [] and c.get("/orders").json() == []
+
+
+def test_orders_work_when_empty_lists_come_back_as_none(client, mock):
+    mock._mock_set_quirks(empty_as_none=True)
+    assert client.get("/positions").json() == [] and client.get("/orders").json() == []
+    r = market(client, volume=0.1)
+    assert r.status_code == 200, r.text
+    assert len(client.get("/positions").json()) == 1

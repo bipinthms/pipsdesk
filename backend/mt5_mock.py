@@ -299,6 +299,7 @@ class _State:
         self.last_error: tuple[int, str] = (RES_S_OK, "Success")
         self.server_tz = ZoneInfo("Europe/Athens")
         self.closed_symbols: set[str] = set()
+        self.quirks: dict[str, bool] = {}
         self.reset(100_000.0)
 
     def reset(self, balance: float) -> None:
@@ -345,6 +346,7 @@ def _mock_reset(initial_balance: float = 100_000.0) -> None:
         _S.initialized = False
         _S.terminal_down = False
         _S.closed_symbols.clear()
+        _S.quirks = {}
         _S.last_error = (RES_S_OK, "Success")
         _S.reset(initial_balance)
 
@@ -366,6 +368,23 @@ def _mock_set_terminal_down(down: bool) -> None:
 def _mock_set_market_closed(symbol: str, closed: bool) -> None:
     with _S.lock:
         (_S.closed_symbols.add if closed else _S.closed_symbols.discard)(symbol)
+
+
+def _mock_set_quirks(*, empty_as_none: bool = False) -> None:
+    """Behave like real terminal builds in ways the default mock doesn't.
+
+    empty_as_none: positions_get / orders_get / history_deals_get return None with
+    last_error() == (1, "Success") when there is nothing to return.
+    """
+    with _S.lock:
+        _S.quirks = {"empty_as_none": empty_as_none}
+
+
+def _empty(result: tuple):
+    if not result and _S.quirks.get("empty_as_none"):
+        _S.last_error = (RES_S_OK, "Success")
+        return None
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -597,15 +616,27 @@ def positions_get(symbol: str | None = None, group: str | None = None, ticket: i
             return None
         _process()
         now = _server_now()
-        return tuple(
+        return _empty(tuple(
             _pos_tuple(p, now)
             for p in _S.positions.values()
             if (symbol is None or p.symbol == symbol) and (ticket is None or p.ticket == ticket)
-        )
+        ))
 
 
-def positions_total() -> int:
-    return len(_S.positions)
+def positions_total() -> int | None:
+    with _S.lock:
+        if _ready() is None:
+            return None
+        _process()
+        return len(_S.positions)
+
+
+def orders_total() -> int | None:
+    with _S.lock:
+        if _ready() is None:
+            return None
+        _process()
+        return len(_S.orders)
 
 
 def orders_get(symbol: str | None = None, group: str | None = None, ticket: int | None = None):
@@ -614,11 +645,11 @@ def orders_get(symbol: str | None = None, group: str | None = None, ticket: int 
             return None
         _process()
         now = _server_now()
-        return tuple(
+        return _empty(tuple(
             _order_tuple(o, now)
             for o in _S.orders.values()
             if (symbol is None or o.symbol == symbol) and (ticket is None or o.ticket == ticket)
-        )
+        ))
 
 
 def history_deals_get(date_from=None, date_to=None, group=None, ticket=None, position=None):
@@ -631,14 +662,24 @@ def history_deals_get(date_from=None, date_to=None, group=None, ticket=None, pos
             return v.timestamp() if isinstance(v, datetime) else v
 
         lo, hi = ts(date_from), ts(date_to)
-        return tuple(
+        return _empty(tuple(
             d
             for d in _S.deals
             if (lo is None or d.time >= lo)
             and (hi is None or d.time <= hi)
             and (position is None or d.position_id == position)
             and (ticket is None or d.ticket == ticket)
-        )
+        ))
+
+
+def history_deals_total(date_from, date_to) -> int | None:
+    with _S.lock:
+        if _ready() is None:
+            return None
+        _process()
+        lo = date_from.timestamp() if isinstance(date_from, datetime) else date_from
+        hi = date_to.timestamp() if isinstance(date_to, datetime) else date_to
+        return sum(1 for d in _S.deals if lo <= d.time <= hi)
 
 
 def order_calc_profit(action: int, symbol: str, volume: float, price_open: float, price_close: float):

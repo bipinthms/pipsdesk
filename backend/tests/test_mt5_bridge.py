@@ -7,6 +7,7 @@ import pytest
 from backend.config import Settings
 from backend.mt5_bridge import (
     MT5Bridge,
+    MT5Error,
     MT5Unavailable,
     SymbolNotFound,
     TradeRejected,
@@ -123,3 +124,27 @@ def test_message_mapping():
     assert "retcode 99999" in describe_retcode(99999)
     assert "Authorization failed" in describe_last_error(-6, "auth")
     assert describe_last_error(-77, "weird") == "weird"
+
+
+class TestEmptyListsAsNone:
+    """Some terminal builds answer an empty list with None and last_error() == (1, "Success")."""
+
+    @pytest.fixture(autouse=True)
+    def quirk(self, mock):
+        mock._mock_set_quirks(empty_as_none=True)
+
+    def test_empty_positions_orders_and_history(self, bridge, clock):
+        assert bridge.positions() == [] and bridge.orders() == []
+        later = int(clock.t) + 10 * 86_400
+        assert bridge.deals(later, later + 86_400) == []
+
+    def test_missing_ticket_is_still_position_closed(self, bridge):
+        with pytest.raises(TradeRejected) as exc:
+            bridge.close_position(999)
+        assert exc.value.retcode == 10036
+
+    def test_a_failed_read_never_looks_empty(self, bridge, mock, monkeypatch):
+        bridge.market_order("EURUSD", "buy", 0.1)
+        monkeypatch.setattr(mock, "positions_get", lambda **_: None)
+        with pytest.raises(MT5Error, match="reports 1"):
+            bridge.positions()

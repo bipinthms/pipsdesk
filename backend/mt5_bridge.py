@@ -116,6 +116,10 @@ LAST_ERROR_MESSAGES: dict[int, str] = {
 }
 # Codes meaning the IPC link to the terminal is gone: we must re-initialise.
 _IPC_ERRORS = {-10000, -10001, -10002, -10003, -10004, -10005}
+RES_S_OK = 1
+# List calls that some terminal builds answer with None + (1, "Success") when the list is
+# empty, and the count call that tells an empty list apart from a failure.
+_LIST_TOTALS = {"positions_get": "positions_total", "orders_get": "orders_total", "history_deals_get": "history_deals_total"}
 
 
 def describe_retcode(retcode: int, comment: str = "") -> str:
@@ -318,10 +322,26 @@ class MT5Bridge:
                 if code in _IPC_ERRORS:
                     self._mark_disconnected(describe_last_error(code, message))
                     raise MT5Unavailable(self._last_error or "")
+                if code == RES_S_OK and name in _LIST_TOTALS:
+                    return self._empty_list(name, args, kwargs)
                 if not_found:
                     raise SymbolNotFound(not_found)
                 raise MT5Error(f"{name} failed: {describe_last_error(code, message)}")
             return result
+
+    def _empty_list(self, name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> tuple[()]:
+        """None with a success code: an empty list, but only once the matching count agrees.
+
+        A filtered lookup (by ticket or symbol) that finds nothing is simply empty. An
+        unfiltered one is double-checked, so a failed read can never look like "no
+        positions" to the risk engine.
+        """
+        if kwargs:
+            return ()
+        total = getattr(self._mt5, _LIST_TOTALS[name])(*args)
+        if total == 0:
+            return ()
+        raise MT5Error(f"{name} returned nothing but the terminal reports {total} item(s).")
 
     # -- market data --------------------------------------------------------
 

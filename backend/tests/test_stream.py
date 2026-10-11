@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
 from backend.api import create_app
-from backend.mt5_bridge import MT5Bridge
+from backend.mt5_bridge import MT5Bridge, MT5Error
 from backend.stream import StreamHub
 
 
@@ -229,3 +229,21 @@ def test_unknown_chart_symbol_drops_only_its_charts(hub):
     c = run(go())
     assert c.charts == {("EURUSD", "M5")}
     assert any(m["type"] == "error" and m["symbol"] == "NOPE" for m in ws.take())
+
+
+def test_empty_lists_returned_as_none_still_stream(hub, mock):
+    mock._mock_set_quirks(empty_as_none=True)
+    snap, errors = hub._snapshot({"EURUSD"}, {("EURUSD", "M5")})
+    assert errors == {}
+    assert snap["positions"][0] == [] and snap["orders"][0] == []
+    assert {"account", "tick:EURUSD", "candle:EURUSD:M5"} <= set(snap)
+
+
+def test_one_failing_part_does_not_stop_the_stream(hub, monkeypatch):
+    def broken():
+        raise MT5Error("orders_get failed: odd reply")
+
+    monkeypatch.setattr(hub._bridge, "orders", broken)
+    snap, _ = hub._snapshot({"EURUSD", "XAUUSD"}, {("EURUSD", "M5")})
+    assert "orders" not in snap
+    assert {"account", "positions", "tick:EURUSD", "tick:XAUUSD", "candle:EURUSD:M5"} <= set(snap)
