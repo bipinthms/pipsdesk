@@ -214,6 +214,9 @@ class RiskStatus(BaseModel):
     next_news_event_utc: float | None
     # The terminal switched to another account: new orders wait for the limits to be confirmed.
     account_changed: bool = False
+    # This computer's clock minus the broker's, seconds (None until ticks were seen moving).
+    # News blackout windows use this computer's clock.
+    clock_skew_s: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -540,8 +543,9 @@ class RiskEngine:
                 f"Rate limit: {n_actions} order actions in the last minute (max {s.max_actions_per_minute})."
             )
 
-        # --- news blackout (new orders only) ---------------------------------------------
-        if intent.action in ("open", "pending"):
+        # --- news blackout: new orders, and moving a pending order's entry ----------------------
+        moves_entry = existing is not None and intent.action == "modify_order" and candidate.entry != existing.entry
+        if intent.action in ("open", "pending") or moves_entry:
             event = self._blackout_event(ctx.now_utc, ctx.news_times_utc)
             if event is not None:
                 at = datetime.fromtimestamp(event, UTC).strftime("%H:%M UTC")

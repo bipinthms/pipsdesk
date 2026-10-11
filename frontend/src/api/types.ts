@@ -156,6 +156,8 @@ export interface RiskStatus {
   next_news_event_utc: number | null
   /** The terminal switched to another MT5 account: new orders wait until the limits are confirmed in Settings. */
   account_changed: boolean
+  /** This computer's clock minus the broker's, seconds (null until known). News blackouts use this clock. */
+  clock_skew_s: number | null
 }
 
 export interface RiskDecision {

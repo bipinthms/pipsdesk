@@ -90,3 +90,15 @@ def test_rejects_absurd_offsets(feed):
     feed.offset = 20 * 3600
     feed.advance(1)
     assert c.now() is None and c.offset_s is None
+
+
+def test_measures_this_computers_clock_against_the_brokers(feed):
+    c = make(feed, offset=OFFSET)
+    c.now()
+    feed.advance(1)
+    c.now()
+    assert c.skew_s == pytest.approx(0.4, abs=0.05)  # just the tick lag: healthy
+    feed.utc += 180  # this computer's clock jumps 3 minutes ahead
+    feed.tick = (int(feed.utc - 180 + OFFSET), int((feed.utc - 180 + OFFSET) * 1000))
+    c.now()
+    assert c.skew_s == pytest.approx(180, abs=1)

@@ -655,3 +655,11 @@ def test_status_reads_the_rate_limit_without_changing_it():
     assert e.status(BAL, later).actions_last_minute == 1
     assert len(e._actions) == 3  # untouched; only the locked paths trim the queue
     assert e.actions_in_window(later) == 1 and len(e._actions) == 1
+
+
+def test_moving_a_pending_orders_entry_during_news_is_blocked():
+    e = RiskEngine(RiskSettings(initial_balance=BAL), None, profit)
+    moved = OrderIntent("modify_order", ticket=2, entry=1.0910, sl=1.0850)
+    assert_blocked(e.evaluate(moved, ctx(pending(), news=[NOW])), "News blackout")
+    tighter = OrderIntent("modify_order", ticket=2, entry=1.0900, sl=1.0870)  # same entry, closer stop
+    assert e.evaluate(tighter, ctx(pending(), news=[NOW])).allowed

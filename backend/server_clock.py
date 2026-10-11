@@ -20,6 +20,7 @@ log = logging.getLogger(__name__)
 
 OFFSET_STEP_S = 900  # real UTC offsets are whole quarter hours
 MAX_OFFSET_S = 14 * 3600
+SKEW_WARN_S = 30.0  # news blackouts are ±2 min: a clock this far off matters
 
 TickReader = Callable[[], tuple[int, int]]  # () -> (tick time s, tick time ms), server time
 
@@ -37,6 +38,9 @@ class ServerClock:
         self.offset_s = offset_s
         self._on_learned = on_learned
         self._last_msc: int | None = None
+        # This computer's clock minus the broker's, from moving ticks. Ticks lag the server
+        # by a second or so, so a healthy clock reads about +1 s.
+        self.skew_s: float | None = None
 
     def now(self) -> float | None:
         """Server time as epoch seconds, or None when it isn't known yet.
@@ -55,10 +59,19 @@ class ServerClock:
         self._last_msc = tick_ms
         if tick_s > 0 and moving:
             self._learn(tick_s - utc)
+            if self.offset_s is not None:
+                self._measure_skew(utc + self.offset_s - tick_ms / 1000)
         if self.offset_s is not None:
             return utc + self.offset_s
         # Nothing learned yet: the tick time itself, if it's believable.
         return float(tick_s) if tick_s > 0 and abs(tick_s - utc) <= MAX_OFFSET_S else None
+
+    def _measure_skew(self, skew: float) -> None:
+        was_off = self.skew_s is not None and abs(self.skew_s) > SKEW_WARN_S
+        self.skew_s = round(skew, 1)
+        if abs(skew) > SKEW_WARN_S and not was_off:
+            log.warning("This computer's clock is %.0f s %s the broker's. News blackout windows use it: "
+                        "sync the clock (Windows: w32tm /resync).", abs(skew), "ahead of" if skew > 0 else "behind")
 
     def _learn(self, raw_offset: float) -> None:
         offset = round(raw_offset / OFFSET_STEP_S) * OFFSET_STEP_S

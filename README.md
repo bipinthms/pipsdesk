@@ -208,7 +208,7 @@ Every order action passes `RiskEngine.evaluate` (`backend/risk.py`) before it re
 | Risk per trade | 1% of balance | A stop loss is required. A per-order "no stop loss" override exists only when **Allow orders without a stop loss** is on in Settings (off by default), and such orders always show the confirmation, even in one-click mode |
 | Exposure | 3 positions, 5 lots | Pending orders count towards both |
 | Rate limit | 5 actions/min | Hard ceiling of 30/min |
-| News blackout | ±2 min | Around events you enter |
+| News blackout | ±2 min | Around events you enter. Applies to new orders and to moving a pending order's price. It uses the backend computer's clock: the header shows **CLOCK OFF** if that differs from the broker's by more than 30 s |
 | Commission | $0/lot | Round turn |
 
 - **Never blocked:** closing, cancelling, adding a stop, or moving a stop closer. Blocking those could trap you in a losing position.

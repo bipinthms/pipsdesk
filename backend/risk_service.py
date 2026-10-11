@@ -218,7 +218,8 @@ class RiskService:
         if equity is None:
             return None
         now = self._clock()
-        return self.engine.status(equity, now, self._news_times(now))
+        status = self.engine.status(equity, now, self._news_times(now))
+        return status.model_copy(update={"clock_skew_s": self._server_clock.skew_s})
 
     # -- checks -------------------------------------------------------------------
 

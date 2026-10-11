@@ -106,6 +106,14 @@ export function AccountBar({ account, risk, health, connection, theme, onToggleT
         Pipdesk
       </div>
       <ModeBadge mock={health?.mock} mode={account?.account_mode} />
+      {risk?.clock_skew_s != null && Math.abs(risk.clock_skew_s) > 30 && (
+        <span
+          title={`The backend computer's clock is ${Math.abs(risk.clock_skew_s).toFixed(0)} s ${risk.clock_skew_s > 0 ? 'ahead of' : 'behind'} the broker's. News blackout windows use it. On Windows: w32tm /resync.`}
+          className="rounded border border-warn/60 bg-warn/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-warn"
+        >
+          CLOCK OFF {Math.abs(risk.clock_skew_s) >= 90 ? `${Math.round(Math.abs(risk.clock_skew_s) / 60)} MIN` : `${Math.round(Math.abs(risk.clock_skew_s))} S`}
+        </span>
+      )}
       {risk?.account_changed && (
         <button
           type="button"
