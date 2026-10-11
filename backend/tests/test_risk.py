@@ -588,3 +588,23 @@ class TestLateDayStartRebuilt:
         midnight = SERVER + 11 * 3600 + 60  # 00:01 server
         e.observe(BAL, BAL, NOW + 11 * 3600 + 60, midnight)
         assert calls == [] and e.daily_base() == BAL
+
+
+class TestInitialBalance:
+    def test_precedence_settings_then_deposit_then_observed(self):
+        e = RiskEngine(RiskSettings(news_blackout_enabled=False), RiskState(initial_balance_observed=95_000), profit)
+        assert e.initial_balance() == (95_000, "observed")
+        e.state.initial_balance_deposit = 100_000
+        assert e.initial_balance() == (100_000, "deposit")
+        e.settings = RiskSettings(initial_balance=50_000)
+        assert e.initial_balance() == (50_000, "settings")
+
+    def test_live_never_uses_the_first_balance_seen(self):
+        e = RiskEngine(RiskSettings(news_blackout_enabled=False), None, profit, allow_observed_initial=False)
+        e.observe(95_000, 95_000, NOW, SERVER)  # first seen after a 5% loss: would put the floor at 85,500
+        assert e.initial_balance() == (None, "unknown")
+        assert_blocked(e.evaluate(buy(volume=0.1), ctx(balance=95_000)), "Initial balance unknown")
+        assert e.evaluate(OrderIntent("modify_position", ticket=1, sl=1.0990), ctx(pos(), balance=95_000)).allowed
+        e.state.initial_balance_deposit = 100_000
+        d = e.evaluate(buy(volume=0.1), ctx(balance=95_000))
+        assert d.allowed and d.drawdown_floor == pytest.approx(90_000)

@@ -51,9 +51,11 @@ class RiskService:
         server_time_symbol: str,
         clock: Callable[[], float] = time.time,
         expected_login: int | None = None,
+        live: bool = False,
     ) -> None:
         """`expected_login`: the MT5_LOGIN the app is configured for (live mode); new orders are
-        blocked while the terminal is on another account."""
+        blocked while the terminal is on another account. `live`: max drawdown is never measured
+        from the first balance seen (Settings, or the account's first deposit)."""
         self._db = db
         self._bridge = bridge
         self._symbol = server_time_symbol
@@ -64,7 +66,10 @@ class RiskService:
         self.lock = threading.RLock()
         settings = RiskSettings.model_validate(db.get_json(SETTINGS_KEY) or {})
         state = RiskState.model_validate(db.get_json(STATE_KEY) or {})
-        self.engine = RiskEngine(settings, state, bridge.calc_profit, rebuild_day_start=self._rebuild_day_start)
+        self.engine = RiskEngine(
+            settings, state, bridge.calc_profit, rebuild_day_start=self._rebuild_day_start, allow_observed_initial=not live
+        )
+        self._deposit_checked: str | None = None  # account whose first deposit was looked up
         self._news: list[NewsEvent] = db.news_events()
         self._last_equity: float | None = None
         self._clock_error: str | None = None
@@ -187,11 +192,25 @@ class RiskService:
         with self.lock:
             account = self._bridge.account_info()
             before = self.engine.state.model_copy()
-            self.engine.observe(
-                account.balance, account.equity, self._clock(), self.server_now(), account=self._account()[0]
-            )
+            fingerprint = self._account()[0]
+            self.engine.observe(account.balance, account.equity, self._clock(), self.server_now(), account=fingerprint)
+            self._find_first_deposit(fingerprint)
             self._last_equity = account.equity
             self._persist_state(before)
+
+    def _find_first_deposit(self, fingerprint: str) -> None:
+        """Once per account: its first deposit, the account size when Settings leaves it blank."""
+        st = self.engine.state
+        if st.initial_balance_deposit is not None or self._deposit_checked == fingerprint:
+            return
+        try:
+            st.initial_balance_deposit = self._bridge.first_deposit()
+        except MT5Error as exc:
+            log.warning("Can't read the account's first deposit: %s", exc)
+            return
+        self._deposit_checked = fingerprint
+        if st.initial_balance_deposit is not None:
+            log.info("Account size from its first deposit: %.2f", st.initial_balance_deposit)
 
     def status(self, equity: float | None = None) -> RiskStatus | None:
         """Pure computation: no MT5 calls. `equity` defaults to the last observed value."""

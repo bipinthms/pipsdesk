@@ -109,6 +109,8 @@ class RiskState(BaseModel):
     day_start_rebuilt: bool = False
     high_water_equity: float | None = None
     initial_balance_observed: float | None = None
+    # The account's first deposit, from MT5 history: the account size when Settings leaves it blank.
+    initial_balance_deposit: float | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +177,7 @@ class RiskDecision(BaseModel):
 
 
 Level = Literal["ok", "warn", "danger", "breached"]
+InitialSource = Literal["settings", "deposit", "observed", "unknown"]
 
 
 class LimitStatus(BaseModel):
@@ -197,7 +200,7 @@ class RiskStatus(BaseModel):
     day_anchor_late: bool
     day_start_rebuilt: bool = False
     initial_balance: float | None
-    initial_balance_source: Literal["settings", "observed", "unknown"]
+    initial_balance_source: InitialSource
     actions_last_minute: int
     max_actions_per_minute: int
     news_blackout_active: bool
@@ -222,11 +225,15 @@ class RiskEngine:
         state: RiskState | None,
         profit_calc: ProfitCalc,
         rebuild_day_start: DayStartRebuild | None = None,
+        allow_observed_initial: bool = True,
     ) -> None:
+        """`allow_observed_initial=False` (live trading): never measure max drawdown from the first
+        balance seen; without a set or deposited initial balance, new orders are blocked."""
         self.settings = settings
         self.state = state or RiskState()
         self._profit = profit_calc
         self._rebuild = rebuild_day_start
+        self._allow_observed_initial = allow_observed_initial
         self._actions: deque[float] = deque()
 
     # -- clocks and anchors ------------------------------------------------
@@ -317,10 +324,12 @@ class RiskEngine:
 
     # -- limits --------------------------------------------------------------
 
-    def initial_balance(self) -> tuple[float | None, Literal["settings", "observed", "unknown"]]:
+    def initial_balance(self) -> tuple[float | None, InitialSource]:
         if self.settings.initial_balance:
             return self.settings.initial_balance, "settings"
-        if self.state.initial_balance_observed:
+        if self.state.initial_balance_deposit:
+            return self.state.initial_balance_deposit, "deposit"
+        if self.state.initial_balance_observed and self._allow_observed_initial:
             return self.state.initial_balance_observed, "observed"
         return None, "unknown"
 
@@ -585,8 +594,13 @@ class RiskEngine:
                     f"If every stop loss is hit, equity would be {_money(worst)}, below the max drawdown floor of "
                     f"{_money(dd_floor)} ({s.max_drawdown_pct:g}% {s.drawdown_mode})."
                 )
-        else:
+        elif self._allow_observed_initial:
             warnings.append("Initial balance unknown: max drawdown is not being enforced. Set it in Settings.")
+        else:
+            violations.append(
+                "Initial balance unknown: set it in Settings. Max drawdown is measured from it, and no "
+                "deposit was found in the account's MT5 history."
+            )
 
         decision.violations = violations
         decision.warnings = warnings

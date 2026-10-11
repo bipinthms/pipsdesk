@@ -148,7 +148,8 @@ export interface RiskStatus {
   /** A late day start rebuilt from MT5 history (closed trades since the reset, positions open at it). */
   day_start_rebuilt: boolean
   initial_balance: number | null
-  initial_balance_source: 'settings' | 'observed' | 'unknown'
+  /** settings, the account's first deposit in MT5 history, or (mock mode only) the first balance seen. */
+  initial_balance_source: 'settings' | 'deposit' | 'observed' | 'unknown'
   actions_last_minute: number
   max_actions_per_minute: number
   news_blackout_active: boolean

@@ -57,7 +57,7 @@ def test_status_captures_day_anchor(client, db):
     st = client.get("/risk/status").json()
     assert st["daily"]["base"] == 100_000 and st["daily"]["floor"] == 95_000 and st["daily"]["level"] == "ok"
     assert st["drawdown"]["floor"] == 90_000
-    assert st["initial_balance_source"] == "observed"
+    assert st["initial_balance_source"] == "deposit"  # the mock account's first deposit
     assert db.get_json("risk_state")["day_start_balance"] == 100_000
 
 
@@ -214,3 +214,33 @@ def test_late_day_start_is_rebuilt_from_mt5_history(mock, clock, db, settings):
     assert st.day_start_balance == pytest.approx(expected_balance, abs=0.01)
     assert st.day_start_equity == pytest.approx(expected_equity, abs=0.05)
     assert booked != 0 and expected_equity != expected_balance
+
+
+def test_first_deposit_sets_the_account_size(mock, clock, db, settings):
+    from backend.risk import OrderIntent
+    from backend.risk_service import RiskService
+
+    bridge = MT5Bridge(settings, mt5=mock, clock=clock)
+    assert bridge.connect()
+    assert bridge.first_deposit() == 100_000
+    live = RiskService(db, bridge, "EURUSD", clock=clock, live=True)
+    live.observe()
+    assert live.engine.initial_balance() == (100_000, "deposit")
+    tick = bridge.tick("EURUSD")
+    assert live.evaluate(OrderIntent("open", "EURUSD", "buy", 0.1, tick.ask, round(tick.ask - 0.005, 5))).allowed
+
+
+def test_live_mode_without_a_deposit_blocks_until_set(mock, clock, db, settings, monkeypatch):
+    from backend.risk import OrderIntent
+    from backend.risk_service import RiskService
+
+    bridge = MT5Bridge(settings, mt5=mock, clock=clock)
+    assert bridge.connect()
+    monkeypatch.setattr(bridge, "first_deposit", lambda: None)
+    live = RiskService(db, bridge, "EURUSD", clock=clock, live=True)
+    live.observe()
+    tick = bridge.tick("EURUSD")
+    intent = OrderIntent("open", "EURUSD", "buy", 0.1, tick.ask, round(tick.ask - 0.005, 5))
+    assert "Initial balance unknown" in live.evaluate(intent).violations[0]
+    live.update_settings(live.settings.model_copy(update={"initial_balance": 100_000}))
+    assert live.evaluate(intent).allowed

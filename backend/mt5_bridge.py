@@ -525,6 +525,12 @@ class MT5Bridge:
         deals = self.deals_from(self._call("history_deals_get", position=position_id))
         return sorted(deals, key=lambda d: (d.time, d.ticket))
 
+    def first_deposit(self) -> float | None:
+        """The account's first deposit (the account size for a prop account), from its full history."""
+        raw = self._call("history_deals_get", 946_684_800, int(time.time()) + 2 * 86_400)  # 2000-01-01 .. now
+        deposits = sorted((d for d in raw if d.type == 2 and d.profit > 0), key=lambda d: (d.time, d.ticket))
+        return float(deposits[0].profit) if deposits else None
+
     def trading_pnl_since(self, server_ts: int) -> float:
         """Closed P/L, commission, swap, fees and charges booked since `server_ts` (server time).
         Deposits, withdrawals, credit and bonuses are capital, not trading, and are left out."""

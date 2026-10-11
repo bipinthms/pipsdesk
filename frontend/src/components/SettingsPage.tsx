@@ -24,7 +24,7 @@ interface FieldDef {
 const SECTIONS: [string, FieldDef[]][] = [
   ['Account', [
     { key: 'initial_balance', label: 'Initial balance', kind: 'number', optional: true, suffix: '$',
-      hint: 'Your FundingPips account size; max drawdown is measured from it. Blank = first balance the app sees.' },
+      hint: "Your FundingPips account size; max drawdown is measured from it. Blank = the account's first deposit in MT5 history (live trading is blocked if there is none)." },
   ]],
   ['Daily loss limit', [
     { key: 'daily_loss_pct', label: 'Max daily loss', kind: 'number', step: 0.1, suffix: '%', looser: 'up' },
