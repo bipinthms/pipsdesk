@@ -135,3 +135,39 @@ def test_worst_case_counts_live_positions(client):
     d = client.post("/risk/check", json=order, headers=CSRF).json()
     assert d["allowed"]
     assert d["worst_case_equity"] == pytest.approx(100_000 - 1_500 - 2 * 16, abs=40)  # spread on entry
+
+
+def test_switching_accounts_blocks_new_orders_until_limits_are_confirmed(client, mock, db):
+    assert client.get("/risk/status").json()["account_changed"] is False  # first account adopted
+    mock._mock_switch_account(87_654_321, "FundingPips-Server", 200_000)
+    st = client.get("/risk/status").json()
+    assert st["account_changed"] is True
+    assert st["daily"]["base"] == 200_000 and st["drawdown"]["floor"] == 180_000  # not the old account's 95k/90k
+
+    bid, ask = eurusd(client)
+    order = {"symbol": "EURUSD", "side": "buy", "volume": 0.1, "sl": round(ask - 0.0050, 5)}
+    r = client.post("/orders", json=order, headers=CSRF)
+    assert r.status_code == 422 and "different MT5 account" in r.json()["detail"]
+    # A position opened in the terminal on the new account can still be closed.
+    ticket = client.app.state.bridge.market_order("EURUSD", "buy", 0.1).order
+    assert client.delete(f"/positions/{ticket}", headers=CSRF).status_code == 200
+
+    s = client.get("/risk/settings").json()
+    assert client.put("/risk/settings", json=s, headers=CSRF).status_code == 200
+    assert client.get("/risk/status").json()["account_changed"] is False
+    assert client.post("/orders", json=order, headers=CSRF).status_code == 200
+    assert any("confirmed for a new MT5 account" in e.reason for e in db.journal_list(status="info"))
+
+
+def test_terminal_on_another_account_than_configured_blocks_new_orders(mock, clock, db, settings):
+    from backend.risk import OrderIntent
+    from backend.risk_service import RiskService
+
+    bridge = MT5Bridge(settings, mt5=mock, clock=clock)
+    assert bridge.connect()
+    tick = bridge.tick("EURUSD")
+    intent = OrderIntent("open", "EURUSD", "buy", 0.1, tick.ask, round(tick.ask - 0.005, 5))
+    wrong = RiskService(db, bridge, "EURUSD", clock=clock, expected_login=999)
+    assert "different account from MT5_LOGIN" in wrong.evaluate(intent).violations[0]
+    right = RiskService(db, bridge, "EURUSD", clock=clock, expected_login=12_345_678)
+    assert right.evaluate(intent).allowed

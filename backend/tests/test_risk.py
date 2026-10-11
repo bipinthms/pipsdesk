@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -522,3 +523,30 @@ class TestNeverBlocked:
     def test_other_actions_need_a_context(self):
         with pytest.raises(ValueError):
             make().evaluate(buy(), None)
+
+
+class TestAccountBinding:
+    def test_first_account_is_adopted(self):
+        e = make()
+        e.observe(BAL, BAL, NOW, SERVER, account="acct-a")
+        assert e.state.account == "acct-a" and e.state.account_confirmed
+
+    def test_another_account_starts_afresh_and_blocks_new_risk(self):
+        e = RiskEngine(RiskSettings(news_blackout_enabled=False), None, profit)
+        e.observe(10_000, 10_000, NOW, SERVER, account="small")  # floors 9,500 / 9,000
+        big = replace(ctx(pos(), balance=100_000), account="big")
+        d = e.evaluate(buy(volume=0.1), big)
+        assert_blocked(d, "different MT5 account")
+        assert e.floors() == (pytest.approx(95_000), pytest.approx(90_000))
+        assert e.status(100_000, NOW).account_changed is True
+        # Getting out and protecting positions still work.
+        assert e.evaluate(OrderIntent("close", ticket=1), None).allowed
+        assert e.evaluate(OrderIntent("modify_position", ticket=1, sl=1.0990), big).allowed
+        assert e.confirm_account() is True
+        assert e.evaluate(buy(volume=0.1), big).allowed
+        assert e.confirm_account() is False
+
+    def test_blocks_from_the_service_apply_to_new_risk_only(self):
+        c = replace(ctx(pos()), blocks=["Wrong account."])
+        assert_blocked(make().evaluate(buy(volume=0.1), c), "Wrong account.")
+        assert make().evaluate(OrderIntent("modify_position", ticket=1, sl=1.0990), c).allowed

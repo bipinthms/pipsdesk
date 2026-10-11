@@ -106,6 +106,16 @@ export function AccountBar({ account, risk, health, connection, theme, onToggleT
         Pipdesk
       </div>
       <ModeBadge mock={health?.mock} mode={account?.account_mode} />
+      {risk?.account_changed && (
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          title="The terminal is on a different MT5 account from the one the risk limits were recorded for. New orders are blocked until you confirm the limits."
+          className="rounded border border-down bg-down px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-white"
+        >
+          ACCOUNT CHANGED · CONFIRM LIMITS
+        </button>
+      )}
 
       {account && connection === 'open' ? (
         <div className="flex items-center gap-6">

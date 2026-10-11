@@ -40,6 +40,10 @@ ProfitCalc = Callable[[Side, str, float, float, float], float]
 EPS = 0.005  # half a cent: tolerance for money comparisons
 RATE_WINDOW_S = 60.0
 LATE_ANCHOR_S = 300.0  # anchors captured >5 min after the reset are flagged
+ACCOUNT_CHANGED = (
+    "The terminal is on a different MT5 account from the one these limits were recorded for. "
+    "Open Settings, check Initial balance and the limits for this account, and save to continue."
+)
 # Real UTC offsets run from -12h to +14h. A server clock further from UTC than this
 # is a bad reading (a zero or very old tick), not a time zone.
 MAX_SERVER_OFFSET_S = 14 * 3600
@@ -85,8 +89,12 @@ class RiskSettings(BaseModel):
 
 
 class RiskState(BaseModel):
-    """Values the engine must remember across restarts."""
+    """Values the engine must remember across restarts, for one MT5 account."""
 
+    # Fingerprint of the MT5 account (login@server) this state belongs to.
+    account: str | None = None
+    # False after the terminal switched accounts, until the limits are confirmed in Settings.
+    account_confirmed: bool = True
     day_key: str | None = None
     # Reset schedule ("HH:MM@zone") that `day_key` was computed under.
     day_schedule: str | None = None
@@ -143,6 +151,9 @@ class RiskContext:
     now_utc: float
     server_now: float | None  # MT5 server clock as epoch seconds; None when it can't be read
     news_times_utc: Sequence[float] = ()
+    account: str | None = None  # fingerprint of the account the terminal is on
+    # Conditions found outside the engine that block new risk (e.g. the wrong account).
+    blocks: Sequence[str] = ()
 
 
 class RiskDecision(BaseModel):
@@ -185,6 +196,8 @@ class RiskStatus(BaseModel):
     max_actions_per_minute: int
     news_blackout_active: bool
     next_news_event_utc: float | None
+    # The terminal switched to another account: new orders wait for the limits to be confirmed.
+    account_changed: bool = False
 
 
 # ---------------------------------------------------------------------------
@@ -220,21 +233,37 @@ class RiskEngine:
     def _schedule(self) -> str:
         return f"{self.settings.day_reset_time}@{self.settings.day_reset_timezone}"
 
+    def confirm_account(self) -> bool:
+        """The trader checked the limits for the current account. Returns True if it was pending."""
+        pending = not self.state.account_confirmed
+        self.state.account_confirmed = True
+        return pending
+
     def clock_valid(self, now_utc: float, server_now: float | None) -> bool:
         """Can the trading day be worked out from these clocks?"""
         if self.settings.day_reset_timezone != "server":
             return True
         return server_now is not None and abs(server_now - now_utc) <= MAX_SERVER_OFFSET_S
 
-    def observe(self, balance: float, equity: float, now_utc: float, server_now: float | None) -> bool:
+    def observe(
+        self, balance: float, equity: float, now_utc: float, server_now: float | None, account: str | None = None
+    ) -> bool:
         """Update day anchor, high-water mark and observed initial balance. Returns True if state changed.
 
         The trading day only ever moves forward. A day key older than the stored one
         (a stale or zero tick, or the repeated hour when clocks go back) is ignored,
         so the anchor can never be re-taken in the middle of a day at a lower equity.
+
+        State belongs to one account. On another account, it starts afresh and new
+        orders are blocked until the limits are confirmed (`confirm_account`).
         """
+        before = self.state.model_copy()
+        if account is not None and self.state.account != account:
+            if self.state.account is None:
+                self.state.account = account  # first run, or state saved before accounts were recorded
+            else:
+                self.state = RiskState(account=account, account_confirmed=False)
         st = self.state
-        before = st.model_copy()
         if st.initial_balance_observed is None:
             st.initial_balance_observed = balance
         if self.clock_valid(now_utc, server_now):
@@ -326,6 +355,7 @@ class RiskEngine:
             max_actions_per_minute=s.max_actions_per_minute,
             news_blackout_active=self._blackout_event(now_utc, news_times_utc) is not None,
             next_news_event_utc=min(upcoming) if upcoming else None,
+            account_changed=not self.state.account_confirmed,
         )
 
     # -- rate limiting ---------------------------------------------------------
@@ -385,7 +415,7 @@ class RiskEngine:
             return RiskDecision(allowed=True)
         if ctx is None:
             raise ValueError(f"{intent.action} needs a risk context")
-        self.observe(ctx.balance, ctx.equity, ctx.now_utc, ctx.server_now)
+        self.observe(ctx.balance, ctx.equity, ctx.now_utc, ctx.server_now, ctx.account)
         daily_floor, dd_floor = self.floors()
         s = self.settings
         violations: list[str] = []
@@ -424,6 +454,11 @@ class RiskEngine:
             return decision
 
         new_pnl = self._pnl_at_sl(candidate)
+
+        # --- the account itself ----------------------------------------------------------------
+        if not self.state.account_confirmed:
+            violations.append(ACCOUNT_CHANGED)
+        violations.extend(ctx.blocks)
 
         # --- server clock: without it, today's daily-loss anchor can't be confirmed --------
         if not self.clock_valid(ctx.now_utc, ctx.server_now):

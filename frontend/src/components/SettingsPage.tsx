@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState, type ReactNode } from 'react'
 import { api, ApiError } from '../api/client'
+import { useStream } from '../api/stream'
 import type { NewsEvent, RiskSettings } from '../api/types'
 import { useConfirm } from './Confirm'
 import { toast } from './Toasts'
@@ -93,6 +94,7 @@ export function SettingsPage({ onBack, onSaved }: { onBack: () => void; onSaved:
   const [saved, setSaved] = useState<RiskSettings>()
   const [draft, setDraft] = useState<Draft>()
   const [error, setError] = useState<string>()
+  const accountChanged = useStream((s) => s.risk?.account_changed === true)
 
   useEffect(() => {
     api.riskSettings().then((s) => {
@@ -108,19 +110,24 @@ export function SettingsPage({ onBack, onSaved }: { onBack: () => void; onSaved:
   )
 
   const save = () => {
-    if (!saved || !next || changes.length === 0) return
+    if (!saved || !next || (changes.length === 0 && !accountChanged)) return
     const looser = changes.filter((f) => isLooser(f, saved[f.key], next[f.key]))
+    const summary = FIELDS.filter((f) => ['initial_balance', 'daily_loss_pct', 'max_drawdown_pct', 'max_risk_per_trade_pct'].includes(f.key))
     void confirm({
-      title: `Save ${changes.length} risk setting change${changes.length > 1 ? 's' : ''}`,
+      title: changes.length
+        ? `Save ${changes.length} risk setting change${changes.length > 1 ? 's' : ''}`
+        : 'Confirm these limits for this account',
       tone: looser.length ? 'danger' : 'neutral',
       always: true,
       confirmLabel: 'Save settings',
-      rows: changes.map((f) => [
-        f.label,
-        <span className={isLooser(f, saved[f.key], next[f.key]) ? 'text-warn' : ''}>
-          {display(f, saved[f.key])} → {display(f, next[f.key])}
-        </span>,
-      ]),
+      rows: changes.length
+        ? changes.map((f) => [
+            f.label,
+            <span className={isLooser(f, saved[f.key], next[f.key]) ? 'text-warn' : ''}>
+              {display(f, saved[f.key])} → {display(f, next[f.key])}
+            </span>,
+          ])
+        : summary.map((f) => [f.label, display(f, next[f.key])]),
       warnings: looser.length
         ? [`This relaxes ${looser.length} limit${looser.length > 1 ? 's' : ''} (amber). Make sure it still matches your prop firm's rules.`]
         : undefined,
@@ -154,9 +161,9 @@ export function SettingsPage({ onBack, onSaved }: { onBack: () => void; onSaved:
             className="rounded border border-line px-3 py-1 text-muted hover:text-fg disabled:opacity-40">
             Revert
           </button>
-          <button type="button" disabled={!changes.length} onClick={save}
+          <button type="button" disabled={!changes.length && !accountChanged} onClick={save}
             className="rounded bg-accent px-3 py-1 font-semibold text-white disabled:opacity-40">
-            Save
+            {changes.length || !accountChanged ? 'Save' : 'Confirm for this account'}
           </button>
         </div>
       </div>
@@ -164,6 +171,12 @@ export function SettingsPage({ onBack, onSaved }: { onBack: () => void; onSaved:
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="mx-auto flex max-w-5xl flex-col gap-4 p-4">
           {error && <p className="rounded border border-down/40 bg-down/10 px-3 py-2 text-down">{error}</p>}
+          {accountChanged && (
+            <p className="rounded border border-down/50 bg-down/10 px-3 py-2 text-down">
+              The terminal is on a different MT5 account from the one these limits were recorded for. New orders are
+              blocked until you check them, especially <b>Initial balance</b>, and save. Closing positions still works.
+            </p>
+          )}
           <p className="text-[12px] text-muted">
             These limits are enforced by the backend risk engine on every order action. Set them to match your FundingPips
             account rules (check your dashboard), or tighter.

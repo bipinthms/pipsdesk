@@ -151,6 +151,8 @@ export interface RiskStatus {
   max_actions_per_minute: number
   news_blackout_active: boolean
   next_news_event_utc: number | null
+  /** The terminal switched to another MT5 account: new orders wait until the limits are confirmed in Settings. */
+  account_changed: boolean
 }
 
 export interface RiskDecision {

@@ -449,6 +449,11 @@ class MT5Bridge:
             account_mode={0: "demo", 1: "contest"}.get(a.trade_mode, "real"),
         )
 
+    def account_identity(self) -> tuple[int, str]:
+        """Login and server of the account the terminal is on. Server-side only: never sent to the browser."""
+        a = self._call("account_info")
+        return int(a.login), str(a.server)
+
     def positions(self, symbol: str | None = None) -> list[schemas.Position]:
         raw = self._call("positions_get", symbol=symbol) if symbol else self._call("positions_get")
         return [

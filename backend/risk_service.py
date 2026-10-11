@@ -6,6 +6,7 @@ state, keeps the news calendar cached, and journals settings changes.
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import threading
 import time
@@ -31,6 +32,10 @@ log = logging.getLogger(__name__)
 SETTINGS_KEY = "risk_settings"
 STATE_KEY = "risk_state"
 NEWS_LOOKBACK_S = 86_400
+WRONG_ACCOUNT = (
+    "The terminal is logged into a different account from MT5_LOGIN in backend/.env. "
+    "Log the terminal into the configured account, or update .env and restart."
+)
 # How long an order this app just sent is counted before MT5 lists it. A real terminal
 # can take a moment to show a new position or order after order_send returns.
 RECENT_SEND_TTL_S = 10.0
@@ -43,11 +48,15 @@ class RiskService:
         bridge: MT5Bridge,
         server_time_symbol: str,
         clock: Callable[[], float] = time.time,
+        expected_login: int | None = None,
     ) -> None:
+        """`expected_login`: the MT5_LOGIN the app is configured for (live mode); new orders are
+        blocked while the terminal is on another account."""
         self._db = db
         self._bridge = bridge
         self._symbol = server_time_symbol
         self._clock = clock
+        self._expected_login = expected_login
         # Held across evaluate → order_send in the trading layer, so two orders
         # can never both pass the checks against the same exposure.
         self.lock = threading.RLock()
@@ -73,6 +82,8 @@ class RiskService:
         ]
         now = self._clock()
         exposures += self._unlisted_recent(exposures, now)
+        fingerprint, login = self._account()
+        wrong = self._expected_login is not None and login != self._expected_login
         return RiskContext(
             balance=account.balance,
             equity=account.equity,
@@ -80,7 +91,14 @@ class RiskService:
             now_utc=now,
             server_now=self.server_now(),
             news_times_utc=self._news_times(now),
+            account=fingerprint,
+            blocks=[WRONG_ACCOUNT] if wrong else [],
         )
+
+    def _account(self) -> tuple[str, int]:
+        """(fingerprint, login) of the terminal's account. The fingerprint is what's stored."""
+        login, server = self._bridge.account_identity()
+        return hashlib.sha256(f"{login}@{server.strip().lower()}".encode()).hexdigest()[:16], login
 
     def server_now(self) -> float | None:
         """The MT5 server clock, or None when it can't be read (e.g. SERVER_TIME_SYMBOL doesn't exist)."""
@@ -110,7 +128,9 @@ class RiskService:
         with self.lock:
             account = self._bridge.account_info()
             before = self.engine.state.model_copy()
-            self.engine.observe(account.balance, account.equity, self._clock(), self.server_now())
+            self.engine.observe(
+                account.balance, account.equity, self._clock(), self.server_now(), account=self._account()[0]
+            )
             self._last_equity = account.equity
             self._persist_state(before)
 
@@ -182,6 +202,10 @@ class RiskService:
             }
             self.engine.settings = new
             self._db.set_json(SETTINGS_KEY, new.model_dump())
+            # Saving the limits is how the trader confirms them for a newly seen account.
+            if self.engine.confirm_account():
+                self._db.set_json(STATE_KEY, self.engine.state.model_dump())
+                self._db.journal_add(action="settings", status="info", reason="Risk limits confirmed for a new MT5 account.")
             if changes:
                 self._db.journal_add(
                     action="settings",

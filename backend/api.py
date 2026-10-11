@@ -94,7 +94,8 @@ def create_app(
         b = bridge or MT5Bridge(settings)
         app.state.bridge = b
         database = db or Database(settings.db_path)
-        risk = RiskService(database, b, settings.server_time_symbol, clock=clock)
+        live_login = settings.mt5_login if not settings.mt5_mock else None
+        risk = RiskService(database, b, settings.server_time_symbol, clock=clock, expected_login=live_login)
         hub = StreamHub(b, settings.stream_interval_ms / 1000, risk)
         app.state.db = database
         app.state.risk = risk

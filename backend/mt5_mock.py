@@ -303,6 +303,8 @@ class _State:
         self.reset(100_000.0)
 
     def reset(self, balance: float) -> None:
+        self.login = 12345678
+        self.server = "Mock-Server"
         self.initial_balance = balance
         self.balance = balance
         self.positions: dict[int, _Position] = {}
@@ -368,6 +370,15 @@ def _mock_set_terminal_down(down: bool) -> None:
 def _mock_set_market_closed(symbol: str, closed: bool) -> None:
     with _S.lock:
         (_S.closed_symbols.add if closed else _S.closed_symbols.discard)(symbol)
+
+
+def _mock_switch_account(login: int, server: str, balance: float) -> None:
+    """Log the terminal into another (empty) account, as File -> Login would."""
+    with _S.lock:
+        _S.reset(balance)
+        _S.login, _S.server = login, server
+        _S.created = False
+        initialize()
 
 
 def _mock_set_quirks(*, empty_as_none: bool = False, list_lag_s: float = 0.0) -> None:
@@ -588,9 +599,9 @@ def account_info():
         equity = round(_S.balance + profit, 2)
         level = round(equity / margin * 100, 2) if margin else 0.0
         return AccountInfo(
-            12345678, 0, 100, 200, 0, True, True, 2, 2, False, round(_S.balance, 2), 0.0, profit,
+            _S.login, 0, 100, 200, 0, True, True, 2, 2, False, round(_S.balance, 2), 0.0, profit,
             equity, margin, round(equity - margin, 2), level, 100.0, 50.0, "Mock Trader",
-            "Mock-Server", "USD", "Mock Broker",
+            _S.server, "USD", "Mock Broker",
         )
 
 
