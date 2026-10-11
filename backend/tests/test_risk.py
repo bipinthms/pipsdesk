@@ -550,3 +550,41 @@ class TestAccountBinding:
         c = replace(ctx(pos()), blocks=["Wrong account."])
         assert_blocked(make().evaluate(buy(volume=0.1), c), "Wrong account.")
         assert make().evaluate(OrderIntent("modify_position", ticket=1, sl=1.0990), c).allowed
+
+
+class TestLateDayStartRebuilt:
+    """App started after the reset: the day start comes from history, not today's numbers."""
+
+    def make(self, found):
+        calls = []
+
+        def rebuild(reset_at, balance_now):
+            calls.append((reset_at, balance_now))
+            return found
+
+        return RiskEngine(RiskSettings(initial_balance=BAL, news_blackout_enabled=False), None, profit, rebuild), calls
+
+    def test_losses_before_the_app_started_still_count(self):
+        e, calls = self.make((100_000.0, 100_500.0))
+        e.observe(97_000, 97_000, NOW, SERVER)  # server 13:00, 3% realised loss this morning
+        assert calls == [(SERVER - 13 * 3600, 97_000)]  # asked for the 00:00 server reset
+        assert (e.state.day_start_balance, e.state.day_start_equity) == (100_000, 100_500)
+        assert e.state.day_anchor_late and e.state.day_start_rebuilt
+        assert e.floors()[0] == pytest.approx(100_500 * 0.95)
+        assert e.status(97_000, NOW).day_start_rebuilt is True
+
+    def test_equity_unknown_uses_the_higher_of_rebuilt_balance_and_today(self):
+        e, _ = self.make((100_000.0, None))
+        e.observe(97_000, 97_000, NOW, SERVER)
+        assert e.state.day_start_equity == 100_000 and e.floors()[0] == pytest.approx(95_000)
+
+    def test_history_unavailable_falls_back_to_today(self):
+        e, _ = self.make(None)
+        e.observe(97_000, 97_000, NOW, SERVER)
+        assert e.state.day_start_balance == 97_000 and not e.state.day_start_rebuilt and e.state.day_anchor_late
+
+    def test_on_time_anchor_is_not_rebuilt(self):
+        e, calls = self.make((1.0, 1.0))
+        midnight = SERVER + 11 * 3600 + 60  # 00:01 server
+        e.observe(BAL, BAL, NOW + 11 * 3600 + 60, midnight)
+        assert calls == [] and e.daily_base() == BAL

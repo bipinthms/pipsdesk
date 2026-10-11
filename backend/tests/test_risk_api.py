@@ -179,3 +179,38 @@ def test_server_clock_offset_is_learned_and_saved(client, clock, db):
     clock.advance(2)  # the mock's EURUSD ticks move with the clock
     assert risk.server_now() == pytest.approx(clock.t + 3 * 3600)  # Europe/Athens in October
     assert db.get_json("server_clock") == {"offset_s": 3 * 3600}
+
+
+def test_late_day_start_is_rebuilt_from_mt5_history(mock, clock, db, settings):
+    """Positions held over the reset, closed or reduced after it: the day start is rebuilt exactly."""
+    from backend.risk_service import RiskService
+
+    bridge = MT5Bridge(settings, mt5=mock, clock=clock)
+    assert bridge.connect()
+    offset = 3 * 3600  # mock server: Europe/Athens, summer time
+    reset = (int(clock.t + offset) // 86_400 + 1) * 86_400  # next server midnight
+    clock.t = reset - offset - 2 * 3600  # 22:00 server, before the reset
+    a = bridge.market_order("EURUSD", "buy", 1.0).order
+    b = bridge.market_order("XAUUSD", "sell", 0.5).order
+    clock.t = reset - offset + 3600  # 01:00: after the reset
+    bridge.close_position(a, 0.4)
+    bridge.close_position(b)
+    bridge.market_order("EURUSD", "sell", 0.2)  # opened after the reset: not part of the day start
+    clock.t = reset - offset + 5 * 3600  # 05:00: the app starts
+
+    booked = sum(d.profit for d in bridge.deals(reset, reset + 86_400))
+    expected_balance = bridge.account_info().balance - booked
+    eur_bid, _ = bridge.price_at("EURUSD", reset)
+    _, xau_ask = bridge.price_at("XAUUSD", reset)
+    a_open = bridge.position_deals(a)[0].price
+    b_open = bridge.position_deals(b)[0].price
+    expected_equity = (expected_balance + bridge.calc_profit("buy", "EURUSD", 1.0, a_open, eur_bid)
+                       + bridge.calc_profit("sell", "XAUUSD", 0.5, b_open, xau_ask))
+
+    svc = RiskService(db, bridge, "EURUSD", clock=clock)
+    svc.observe()
+    st = svc.engine.state
+    assert st.day_anchor_late and st.day_start_rebuilt
+    assert st.day_start_balance == pytest.approx(expected_balance, abs=0.01)
+    assert st.day_start_equity == pytest.approx(expected_equity, abs=0.05)
+    assert booked != 0 and expected_equity != expected_balance

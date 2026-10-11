@@ -64,7 +64,7 @@ class RiskService:
         self.lock = threading.RLock()
         settings = RiskSettings.model_validate(db.get_json(SETTINGS_KEY) or {})
         state = RiskState.model_validate(db.get_json(STATE_KEY) or {})
-        self.engine = RiskEngine(settings, state, bridge.calc_profit)
+        self.engine = RiskEngine(settings, state, bridge.calc_profit, rebuild_day_start=self._rebuild_day_start)
         self._news: list[NewsEvent] = db.news_events()
         self._last_equity: float | None = None
         self._clock_error: str | None = None
@@ -131,6 +131,47 @@ class RiskService:
     @property
     def server_offset_s(self) -> float | None:
         return self._server_clock.offset_s
+
+    # -- day start rebuilt from history (the app wasn't running at the reset) ----------
+
+    def _rebuild_day_start(self, reset_at: float, balance_now: float) -> tuple[float, float | None] | None:
+        """Balance and equity at the reset: today's balance minus the trading P/L booked since
+        (a deposit today counts as day-start capital), plus the P/L at the reset of the
+        positions open then (priced from M1 bars)."""
+        reset = int(reset_at)
+        try:
+            start_balance = round(balance_now - self._bridge.trading_pnl_since(reset), 2)
+        except MT5Error as exc:
+            log.warning("Can't rebuild the day start from MT5 history: %s", exc)
+            return None
+        try:
+            start_equity: float | None = round(start_balance + self._floating_at(reset), 2)
+        except MT5Error as exc:
+            log.warning("Can't rebuild the equity at the day start: %s", exc)
+            start_equity = None
+        log.info("Day start rebuilt from history: balance %.2f, equity %s", start_balance, start_equity)
+        return start_balance, start_equity
+
+    def _floating_at(self, reset: int) -> float:
+        """Open P/L at `reset` (server time) of every position open at that moment."""
+        b = self._bridge
+        ids = {p.ticket for p in b.positions() if p.time < reset}
+        ids |= {d.position_id for d in b.deals(reset, reset + 3 * 86_400) if d.entry == "out" and d.position_id}
+        total = 0.0
+        for pid in sorted(ids):
+            before = [d for d in b.position_deals(pid) if d.time < reset]
+            opened = [d for d in before if d.entry == "in" and d.side is not None]
+            volume = sum(d.volume for d in opened) - sum(d.volume for d in before if d.entry == "out")
+            if not opened or volume <= 1e-9:
+                continue
+            first = opened[0]
+            price_open = sum(d.price * d.volume for d in opened) / sum(d.volume for d in opened)
+            quote = b.price_at(first.symbol, reset)
+            if quote is None:
+                raise MT5Error(f"No {first.symbol} price at the day start.")
+            close = quote[0] if first.side == "buy" else quote[1]
+            total += b.calc_profit(first.side, first.symbol, volume, price_open, close)  # type: ignore[arg-type]
+        return total
 
     def _news_times(self, now: float) -> list[float]:
         return [float(e.time_utc) for e in self._news if e.time_utc >= now - NEWS_LOOKBACK_S]

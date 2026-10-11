@@ -145,6 +145,8 @@ export interface RiskStatus {
   day_start_balance: number | null
   day_start_equity: number | null
   day_anchor_late: boolean
+  /** A late day start rebuilt from MT5 history (closed trades since the reset, positions open at it). */
+  day_start_rebuilt: boolean
   initial_balance: number | null
   initial_balance_source: 'settings' | 'observed' | 'unknown'
   actions_last_minute: number

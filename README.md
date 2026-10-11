@@ -209,7 +209,7 @@ Every order action passes `RiskEngine.evaluate` (`backend/risk.py`) before it re
 
 - **Never blocked:** closing, cancelling, adding a stop, or moving a stop closer. Blocking those could trap you in a losing position.
 - **Locking:** one lock is held from the check through `order_send`, so two simultaneous orders can't both pass.
-- **Restarts:** the day's starting balance and the high-water mark persist across restarts. If the app wasn't running at the reset, the starting balance is recorded late and flagged in the UI.
+- **Restarts:** the day's starting balance and the high-water mark persist across restarts. If the app wasn't running at the reset, the day start is rebuilt from MT5 history: today's balance minus the trading P/L booked since the reset (deposits and withdrawals excluded), and the equity at the reset from the positions open then, priced from M1 bars. It's flagged in the UI (hover the `*`). If history can't be read, the account as first seen today is used and flagged.
 - **One account:** the saved day start, high-water mark and observed balances belong to the MT5 account they were recorded on (a fingerprint of login@server, kept server-side). If the terminal switches to another account, they start afresh and new orders are blocked (**ACCOUNT CHANGED** in the header) until you check the limits in Settings and save. In live mode, new orders are also blocked while the terminal is logged into a different account from `MT5_LOGIN`.
 
 ## Tests

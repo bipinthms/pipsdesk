@@ -36,6 +36,9 @@ from pydantic import BaseModel, Field, field_validator
 Side = Literal["buy", "sell"]
 # (side, symbol, volume, price_open, price_close) -> P/L in account currency
 ProfitCalc = Callable[[Side, str, float, float, float], float]
+# (reset instant in server time, balance now) -> (balance, equity or None) at the reset,
+# rebuilt from account history; None when history can't be read.
+DayStartRebuild = Callable[[float, float], "tuple[float, float | None] | None"]
 
 EPS = 0.005  # half a cent: tolerance for money comparisons
 RATE_WINDOW_S = 60.0
@@ -102,6 +105,8 @@ class RiskState(BaseModel):
     day_start_equity: float | None = None
     day_anchor_time_utc: float | None = None
     day_anchor_late: bool = False
+    # A late day start rebuilt from MT5 history rather than taken from the current account.
+    day_start_rebuilt: bool = False
     high_water_equity: float | None = None
     initial_balance_observed: float | None = None
 
@@ -190,6 +195,7 @@ class RiskStatus(BaseModel):
     day_start_balance: float | None
     day_start_equity: float | None
     day_anchor_late: bool
+    day_start_rebuilt: bool = False
     initial_balance: float | None
     initial_balance_source: Literal["settings", "observed", "unknown"]
     actions_last_minute: int
@@ -210,10 +216,17 @@ def _money(v: float) -> str:
 
 
 class RiskEngine:
-    def __init__(self, settings: RiskSettings, state: RiskState | None, profit_calc: ProfitCalc) -> None:
+    def __init__(
+        self,
+        settings: RiskSettings,
+        state: RiskState | None,
+        profit_calc: ProfitCalc,
+        rebuild_day_start: DayStartRebuild | None = None,
+    ) -> None:
         self.settings = settings
         self.state = state or RiskState()
         self._profit = profit_calc
+        self._rebuild = rebuild_day_start
         self._actions: deque[float] = deque()
 
     # -- clocks and anchors ------------------------------------------------
@@ -232,6 +245,21 @@ class RiskEngine:
 
     def _schedule(self) -> str:
         return f"{self.settings.day_reset_time}@{self.settings.day_reset_timezone}"
+
+    def _rebuilt_start(self, reset_at: float, balance: float, equity: float) -> tuple[float, float] | None:
+        """Balance and equity at the reset for a late anchor, rebuilt from history.
+
+        Taking today's values instead would let losses made before the app started
+        lower the daily floor. If the equity at the reset can't be rebuilt, the higher
+        of the rebuilt balance and today's equity is used.
+        """
+        if self._rebuild is None:
+            return None
+        found = self._rebuild(reset_at, balance)
+        if found is None:
+            return None
+        start_balance, start_equity = found
+        return start_balance, start_equity if start_equity is not None else max(equity, start_balance)
 
     def confirm_account(self) -> bool:
         """The trader checked the limits for the current account. Returns True if it was pending."""
@@ -277,11 +305,13 @@ class RiskEngine:
                 st.day_key = key
                 st.day_schedule = schedule
             elif st.day_key is None or key > st.day_key:
+                late = since_reset > LATE_ANCHOR_S
+                start = self._rebuilt_start(server_now - since_reset, balance, equity) if late and server_now else None
                 st.day_key = key
-                st.day_start_balance = balance
-                st.day_start_equity = equity
+                st.day_start_balance, st.day_start_equity = start or (balance, equity)
                 st.day_anchor_time_utc = now_utc
-                st.day_anchor_late = since_reset > LATE_ANCHOR_S
+                st.day_anchor_late = late
+                st.day_start_rebuilt = start is not None
         st.high_water_equity = max(st.high_water_equity or equity, equity)
         return st != before
 
@@ -349,6 +379,7 @@ class RiskEngine:
             day_start_balance=self.state.day_start_balance,
             day_start_equity=self.state.day_start_equity,
             day_anchor_late=self.state.day_anchor_late,
+            day_start_rebuilt=self.state.day_start_rebuilt,
             initial_balance=initial,
             initial_balance_source=source,
             actions_last_minute=self.actions_in_window(now_utc),

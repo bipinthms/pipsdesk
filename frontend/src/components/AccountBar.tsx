@@ -143,7 +143,13 @@ export function AccountBar({ account, risk, health, connection, theme, onToggleT
             label="Daily loss left"
             limit={risk?.daily ?? null}
             ccy={ccy}
-            note={risk?.day_anchor_late ? "Day start was recorded late (app wasn't running at the reset)." : undefined}
+            note={
+              risk?.day_start_rebuilt
+                ? "The app wasn't running at the reset: the day start was rebuilt from MT5 history (trades closed since the reset, and positions open at it priced from M1 bars)."
+                : risk?.day_anchor_late
+                  ? "Day start was recorded late (app wasn't running at the reset) and couldn't be rebuilt from history: it uses the account as first seen today."
+                  : undefined
+            }
           />
           <LimitMeter
             label="Drawdown left"

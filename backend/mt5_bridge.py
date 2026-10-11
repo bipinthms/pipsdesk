@@ -168,6 +168,8 @@ TIMEFRAME_SECONDS: dict[str, int] = {
 _PENDING_TYPES = {"buy_limit": 2, "sell_limit": 3, "buy_stop": 4, "sell_stop": 5}
 _PENDING_NAMES = {v: k for k, v in _PENDING_TYPES.items()}
 _DEAL_REASONS = {0: "client", 1: "mobile", 2: "web", 3: "expert", 4: "sl", 5: "tp", 6: "stop_out"}
+# Deal types that move capital rather than trade: balance (deposit/withdrawal), credit, bonus.
+_CAPITAL_DEALS = {2, 3, 6}
 # symbol_info().filling_mode bit flags
 _SYMBOL_FILLING_FOK = 1
 _SYMBOL_FILLING_IOC = 2
@@ -494,7 +496,10 @@ class MT5Bridge:
         ]
 
     def deals(self, date_from: int, date_to: int) -> list[schemas.Deal]:
-        raw = self._call("history_deals_get", date_from, date_to)
+        return self.deals_from(self._call("history_deals_get", date_from, date_to))
+
+    @staticmethod
+    def deals_from(raw: Any) -> list[schemas.Deal]:
         return [
             schemas.Deal(
                 ticket=d.ticket,
@@ -502,7 +507,7 @@ class MT5Bridge:
                 position_id=d.position_id,
                 symbol=d.symbol,
                 side={0: "buy", 1: "sell"}.get(d.type),
-                entry={0: "in", 1: "out"}.get(d.entry, "other"),
+                entry={0: "in", 1: "out", 3: "out"}.get(d.entry, "other"),  # 3 = closed by an opposite position
                 volume=d.volume,
                 price=d.price,
                 profit=d.profit,
@@ -514,6 +519,29 @@ class MT5Bridge:
             )
             for d in raw
         ]
+
+    def position_deals(self, position_id: int) -> list[schemas.Deal]:
+        """Every deal of one position (opening, partial and full closes), oldest first."""
+        deals = self.deals_from(self._call("history_deals_get", position=position_id))
+        return sorted(deals, key=lambda d: (d.time, d.ticket))
+
+    def trading_pnl_since(self, server_ts: int) -> float:
+        """Closed P/L, commission, swap, fees and charges booked since `server_ts` (server time).
+        Deposits, withdrawals, credit and bonuses are capital, not trading, and are left out."""
+        raw = self._call("history_deals_get", server_ts, server_ts + 3 * 86_400)
+        return round(
+            sum(d.profit + d.commission + d.swap + getattr(d, "fee", 0.0) for d in raw if d.type not in _CAPITAL_DEALS),
+            2,
+        )
+
+    def price_at(self, symbol: str, server_ts: int) -> tuple[float, float] | None:
+        """(bid, ask) at `server_ts`: the close of the last M1 bar before it, plus today's spread."""
+        bars = self.candles(symbol, "M1", 1, before=server_ts)
+        if not bars:
+            return None
+        info = self.symbol_info(symbol)
+        bid = bars[-1].close
+        return bid, round(bid + info.spread * info.point, info.digits)
 
     def calc_profit(self, side: schemas.Side, symbol: str, volume: float, price_open: float, price_close: float) -> float:
         """P/L in account currency for moving `volume` lots from price_open to price_close."""
