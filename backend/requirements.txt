@@ -1,0 +1,7 @@
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.8
+pydantic-settings>=2.4
+sqlmodel>=0.0.22
+# Official MetaQuotes package: Windows only. In mock mode (MT5_MOCK=1) it is not needed.
+MetaTrader5>=5.0.45; sys_platform == "win32"

@@ -1,0 +1,67 @@
+@import 'tailwindcss';
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Semantic colour tokens. Components use bg-panel, text-muted, text-up, etc. */
+@theme {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-panel-2: var(--panel-2);
+  --color-line: var(--line);
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-up: var(--up);
+  --color-down: var(--down);
+  --color-warn: var(--warn);
+  --font-sans: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Mono', Menlo, monospace;
+}
+
+:root {
+  --bg: #f4f5f7;
+  --panel: #ffffff;
+  --panel-2: #f0f2f5;
+  --line: #dde1e7;
+  --fg: #151a22;
+  --muted: #6b7380;
+  --accent: #2f6fed;
+  --up: #12a37a;
+  --down: #e0464e;
+  --warn: #d98a00;
+  color-scheme: light;
+}
+
+.dark {
+  --bg: #0d1016;
+  --panel: #141821;
+  --panel-2: #1a1f2a;
+  --line: #262c38;
+  --fg: #e3e7ee;
+  --muted: #8a93a3;
+  --accent: #4d86ff;
+  --up: #20b58a;
+  --down: #f0555d;
+  --warn: #f0a628;
+  color-scheme: dark;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}

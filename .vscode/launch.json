@@ -1,0 +1,52 @@
+{
+  // Run and Debug (⇧⌘D): pick "Pipdesk: full app" to start everything.
+  // Backend: http://127.0.0.1:8000 · UI with hot reload: http://127.0.0.1:5173
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Backend (mock, auto-reload)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "backend",
+      "args": ["--reload"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": true,
+      "subProcess": true
+    },
+    {
+      "name": "Frontend (Vite dev server)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "npm run dev",
+      "cwd": "${workspaceFolder}/frontend"
+    },
+    {
+      "name": "Browser (Chrome → :5173)",
+      "type": "chrome",
+      "request": "launch",
+      "url": "http://127.0.0.1:5173",
+      "webRoot": "${workspaceFolder}/frontend",
+      "sourceMaps": true
+    },
+    {
+      "name": "Backend tests (pytest)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q"],
+      "cwd": "${workspaceFolder}",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ],
+  "compounds": [
+    {
+      "name": "Pipdesk: full app",
+      "configurations": ["Backend (mock, auto-reload)", "Frontend (Vite dev server)", "Browser (Chrome → :5173)"],
+      "stopAll": true
+    }
+  ]
+}
