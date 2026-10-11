@@ -18,7 +18,7 @@ from typing import Any
 from backend import schemas
 from backend.db import Database
 from backend.mt5_bridge import RETCODE_MESSAGES, MT5Bridge, MT5Error, TradeRejected
-from backend.risk import OrderIntent, RiskDecision
+from backend.risk import Exposure, OrderIntent, RiskDecision
 from backend.risk_service import RiskService
 
 log = logging.getLogger(__name__)
@@ -67,6 +67,12 @@ class TradingService:
                 self._db.journal_add(status="error", reason=str(exc), details=extra, **base)
                 raise
             self._risk.record_action()
+            if intent.action in ("open", "pending") and intent.side is not None:
+                # Until MT5 lists it, the next check must still see this order.
+                self._risk.note_sent(Exposure(
+                    "position" if intent.action == "open" else "pending", result.order, intent.symbol, intent.side,
+                    result.volume or intent.volume, result.price or intent.entry, intent.sl,
+                ))
             fields = {**base, "ticket": base.get("ticket") or result.order or None}
             if result.price:
                 fields["price"] = result.price

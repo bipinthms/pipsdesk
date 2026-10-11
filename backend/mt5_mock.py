@@ -370,14 +370,22 @@ def _mock_set_market_closed(symbol: str, closed: bool) -> None:
         (_S.closed_symbols.add if closed else _S.closed_symbols.discard)(symbol)
 
 
-def _mock_set_quirks(*, empty_as_none: bool = False) -> None:
+def _mock_set_quirks(*, empty_as_none: bool = False, list_lag_s: float = 0.0) -> None:
     """Behave like real terminal builds in ways the default mock doesn't.
 
     empty_as_none: positions_get / orders_get / history_deals_get return None with
     last_error() == (1, "Success") when there is nothing to return.
+    list_lag_s: positions and orders only show up in positions_get / orders_get (and
+    the totals) this many seconds after order_send returned, like a real terminal
+    catching up with the trade server.
     """
     with _S.lock:
-        _S.quirks = {"empty_as_none": empty_as_none}
+        _S.quirks = {"empty_as_none": empty_as_none, "list_lag_s": list_lag_s}
+
+
+def _listed(opened: int, now: float) -> bool:
+    lag = _S.quirks.get("list_lag_s") or 0.0
+    return opened <= now - lag
 
 
 def _empty(result: tuple):
@@ -619,7 +627,7 @@ def positions_get(symbol: str | None = None, group: str | None = None, ticket: i
         return _empty(tuple(
             _pos_tuple(p, now)
             for p in _S.positions.values()
-            if (symbol is None or p.symbol == symbol) and (ticket is None or p.ticket == ticket)
+            if (symbol is None or p.symbol == symbol) and (ticket is None or p.ticket == ticket) and _listed(p.time, now)
         ))
 
 
@@ -628,7 +636,8 @@ def positions_total() -> int | None:
         if _ready() is None:
             return None
         _process()
-        return len(_S.positions)
+        now = _server_now()
+        return sum(1 for p in _S.positions.values() if _listed(p.time, now))
 
 
 def orders_total() -> int | None:
@@ -636,7 +645,8 @@ def orders_total() -> int | None:
         if _ready() is None:
             return None
         _process()
-        return len(_S.orders)
+        now = _server_now()
+        return sum(1 for o in _S.orders.values() if _listed(o.time_setup, now))
 
 
 def orders_get(symbol: str | None = None, group: str | None = None, ticket: int | None = None):
@@ -648,7 +658,7 @@ def orders_get(symbol: str | None = None, group: str | None = None, ticket: int 
         return _empty(tuple(
             _order_tuple(o, now)
             for o in _S.orders.values()
-            if (symbol is None or o.symbol == symbol) and (ticket is None or o.ticket == ticket)
+            if (symbol is None or o.symbol == symbol) and (ticket is None or o.ticket == ticket) and _listed(o.time_setup, now)
         ))
 
 

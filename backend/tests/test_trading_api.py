@@ -222,3 +222,32 @@ def test_orders_work_when_empty_lists_come_back_as_none(client, mock):
     r = market(client, volume=0.1)
     assert r.status_code == 200, r.text
     assert len(client.get("/positions").json()) == 1
+
+
+def test_an_order_mt5_hasnt_listed_yet_still_counts(client, mock, clock):
+    """A real terminal can list a new position a moment after order_send returns."""
+    mock._mock_set_quirks(list_lag_s=2.0)
+    s = client.get("/risk/settings").json()
+    client.put("/risk/settings", json={**s, "max_open_positions": 1}, headers=H)
+    assert market(client, volume=0.1).status_code == 200
+    assert client.get("/positions").json() == []  # not listed yet
+    r = market(client, volume=0.1)
+    assert r.status_code == 422 and "Max open positions" in r.json()["detail"]
+    clock.advance(3)  # listed now: counted once, not twice
+    assert len(client.get("/positions").json()) == 1
+    check = {"action": "open", "symbol": "EURUSD", "side": "buy", "volume": 0.1, "sl": 1.0}
+    assert "Max open positions reached: 1" in client.post("/risk/check", json=check, headers=H).json()["violations"][0]
+    clock.advance(15)
+    assert "Max open positions reached: 1" in client.post("/risk/check", json=check, headers=H).json()["violations"][0]
+
+
+def test_a_pending_order_mt5_hasnt_listed_yet_still_counts(client, mock):
+    mock._mock_set_quirks(list_lag_s=2.0)
+    s = client.get("/risk/settings").json()
+    client.put("/risk/settings", json={**s, "max_total_lots": 0.15}, headers=H)
+    bid, ask = quote(client)
+    body = {"symbol": "EURUSD", "side": "buy", "order_type": "limit", "volume": 0.1,
+            "price": round(ask - 0.0030, 5), "sl": round(ask - 0.0080, 5)}
+    assert client.post("/orders", json=body, headers=H).status_code == 200
+    r = client.post("/orders", json=body, headers=H)
+    assert r.status_code == 422 and "Total volume" in r.json()["detail"]

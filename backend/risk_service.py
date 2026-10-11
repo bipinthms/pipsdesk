@@ -31,6 +31,9 @@ log = logging.getLogger(__name__)
 SETTINGS_KEY = "risk_settings"
 STATE_KEY = "risk_state"
 NEWS_LOOKBACK_S = 86_400
+# How long an order this app just sent is counted before MT5 lists it. A real terminal
+# can take a moment to show a new position or order after order_send returns.
+RECENT_SEND_TTL_S = 10.0
 
 
 class RiskService:
@@ -54,6 +57,7 @@ class RiskService:
         self._news: list[NewsEvent] = db.news_events()
         self._last_equity: float | None = None
         self._clock_error: str | None = None
+        self._recent: list[tuple[Exposure, float]] = []  # (exposure, counted until)
 
     # -- context -------------------------------------------------------------
 
@@ -68,6 +72,7 @@ class RiskService:
             for o in b.orders()
         ]
         now = self._clock()
+        exposures += self._unlisted_recent(exposures, now)
         return RiskContext(
             balance=account.balance,
             equity=account.equity,
@@ -134,6 +139,16 @@ class RiskService:
     def record_action(self) -> None:
         with self.lock:
             self.engine.record_action(self._clock())
+
+    def note_sent(self, exposure: Exposure, ttl_s: float = RECENT_SEND_TTL_S) -> None:
+        """An order this app just sent: count it until MT5 lists it (or `ttl_s` passes)."""
+        with self.lock:
+            self._recent.append((exposure, self._clock() + ttl_s))
+
+    def _unlisted_recent(self, listed: list[Exposure], now: float) -> list[Exposure]:
+        tickets = {e.ticket for e in listed}
+        self._recent = [(e, until) for e, until in self._recent if until > now and e.ticket not in tickets]
+        return [e for e, _ in self._recent]
 
     def intent_from_check(self, req: schemas.OrderCheckRequest) -> OrderIntent:
         """Fill in the market price for market orders."""
