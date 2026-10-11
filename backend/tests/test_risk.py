@@ -33,13 +33,17 @@ def make(settings: RiskSettings | None = None, state: RiskState | None = None, *
     return RiskEngine(s, state, profit)
 
 
-def ctx(*exposures: Exposure, balance=BAL, equity=None, now=NOW, server=None, news=()) -> RiskContext:
+_DEFAULT = object()
+
+
+def ctx(*exposures: Exposure, balance=BAL, equity=None, now=NOW, server=_DEFAULT, news=()) -> RiskContext:
+    """`server=None` means the server clock couldn't be read; by default it runs 3h ahead of `now`."""
     return RiskContext(
         balance=balance,
         equity=balance if equity is None else equity,
         exposures=list(exposures),
         now_utc=now,
-        server_now=(now + 3 * 3600) if server is None else server,
+        server_now=(now + 3 * 3600) if server is _DEFAULT else server,
         news_times_utc=list(news),
     )
 
@@ -476,3 +480,45 @@ class TestStatus:
     def test_status_before_any_observation(self):
         st = RiskEngine(RiskSettings(), None, profit).status(BAL, NOW)
         assert st.daily is None and st.drawdown is None and st.initial_balance_source == "unknown"
+
+
+class TestNeverBlocked:
+    """Closing, cancelling and tightening a stop must not depend on account data, prices or the clock."""
+
+    @pytest.mark.parametrize("action", ["close", "cancel"])
+    def test_needs_no_context_at_all(self, action):
+        assert make().evaluate(OrderIntent(action, ticket=1), None).allowed
+
+    def test_tightening_when_pricing_fails(self):
+        def broken(*_):
+            raise RuntimeError("terminal can't price EURUSD")
+
+        e = RiskEngine(RiskSettings(initial_balance=BAL, news_blackout_enabled=False), None, broken)
+        d = e.evaluate(OrderIntent("modify_position", ticket=1, sl=1.0990), ctx(pos()))
+        assert d.allowed and d.trade_risk is None
+
+    @pytest.mark.parametrize("new_sl", [1.0960, 1.0950, 1.1020])  # closer, unchanged, into profit
+    def test_tightening_with_no_server_clock_and_limits_breached(self, new_sl):
+        e = make()
+        e.observe(BAL, BAL, NOW, SERVER)
+        d = e.evaluate(OrderIntent("modify_position", ticket=1, sl=new_sl), ctx(pos(), balance=94_000, server=None))
+        assert d.allowed
+
+    def test_adding_a_stop_to_a_sell_is_always_allowed(self):
+        d = make().evaluate(OrderIntent("modify_position", ticket=1, sl=1.2000), ctx(pos(side="sell", sl=None), server=None))
+        assert d.allowed
+
+    @pytest.mark.parametrize("new_sl", [1.0940, None])
+    def test_widening_or_removing_is_still_checked(self, new_sl):
+        d = make().evaluate(OrderIntent("modify_position", ticket=1, sl=new_sl), ctx(pos(), server=None))
+        assert_blocked(d, "server clock")
+
+    def test_new_order_without_server_clock_is_blocked(self):
+        assert_blocked(make().evaluate(buy(volume=0.1), ctx(server=None)), "server clock can't be read")
+
+    def test_new_order_with_iana_reset_needs_no_server_clock(self):
+        assert make(day_reset_timezone="Europe/Prague").evaluate(buy(volume=0.1), ctx(server=None)).allowed
+
+    def test_other_actions_need_a_context(self):
+        with pytest.raises(ValueError):
+            make().evaluate(buy(), None)

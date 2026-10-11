@@ -118,6 +118,8 @@ class Exposure:
 
 
 ActionKind = Literal["open", "pending", "modify_position", "modify_order", "close", "cancel"]
+# Actions that only ever reduce risk.
+NEVER_BLOCKED: frozenset[str] = frozenset({"close", "cancel"})
 
 
 @dataclass(frozen=True)
@@ -139,7 +141,7 @@ class RiskContext:
     equity: float
     exposures: Sequence[Exposure]
     now_utc: float
-    server_now: float  # MT5 server clock as epoch seconds
+    server_now: float | None  # MT5 server clock as epoch seconds; None when it can't be read
     news_times_utc: Sequence[float] = ()
 
 
@@ -356,19 +358,39 @@ class RiskEngine:
     def _pnl_at(self, e: Exposure, price: float) -> float:
         return self._profit(e.side, e.symbol, e.volume, e.entry, price) - self.settings.commission_per_lot * e.volume
 
+    def _risk_or_none(self, e: Exposure) -> float | None:
+        """Loss at the stop for display only: pricing failures must never block a risk-reducing action."""
+        try:
+            pnl = self._pnl_at_sl(e)
+        except Exception:  # noqa: BLE001 - e.g. the terminal can't price the symbol right now
+            return None
+        return round(max(0.0, -pnl), 2) if pnl is not None and math.isfinite(pnl) else None
+
+    @staticmethod
+    def _tightens(old: Exposure, new: Exposure) -> bool:
+        """Adding a stop, or moving it towards the profit side, with the entry unchanged."""
+        if new.sl is None or new.entry != old.entry:
+            return False
+        if old.sl is None:
+            return True
+        return new.sl >= old.sl if new.side == "buy" else new.sl <= old.sl
+
     # -- the check -------------------------------------------------------------------
 
-    def evaluate(self, intent: OrderIntent, ctx: RiskContext) -> RiskDecision:
+    def evaluate(self, intent: OrderIntent, ctx: RiskContext | None) -> RiskDecision:
+        """`ctx` may be None for closes and cancels: they need no account or market data."""
+        # Closing and cancelling only ever reduce risk: always allowed, whatever state
+        # the account, the prices or the server clock are in.
+        if intent.action in NEVER_BLOCKED:
+            return RiskDecision(allowed=True)
+        if ctx is None:
+            raise ValueError(f"{intent.action} needs a risk context")
         self.observe(ctx.balance, ctx.equity, ctx.now_utc, ctx.server_now)
         daily_floor, dd_floor = self.floors()
         s = self.settings
         violations: list[str] = []
         warnings: list[str] = []
         decision = RiskDecision(allowed=True, daily_floor=daily_floor, drawdown_floor=dd_floor)
-
-        # Closing and cancelling only ever reduce risk: always allowed.
-        if intent.action in ("close", "cancel"):
-            return decision
 
         # --- build the exposure this action would leave behind --------------------
         existing: Exposure | None = None
@@ -395,17 +417,20 @@ class RiskEngine:
                 intent.volume, intent.entry, intent.sl,
             )
 
-        new_pnl = self._pnl_at_sl(candidate)
-        old_pnl = self._pnl_at_sl(existing) if existing else None
         # Adding a stop, or moving one closer (less potential loss), is always allowed.
-        if (
-            existing is not None
-            and new_pnl is not None
-            and candidate.entry == existing.entry
-            and (old_pnl is None or new_pnl >= old_pnl - EPS)
-        ):
-            decision.trade_risk = round(max(0.0, -new_pnl), 2)
+        # Decided from prices alone, so it can't fail on a pricing or clock problem.
+        if existing is not None and self._tightens(existing, candidate):
+            decision.trade_risk = self._risk_or_none(candidate)
             return decision
+
+        new_pnl = self._pnl_at_sl(candidate)
+
+        # --- server clock: without it, today's daily-loss anchor can't be confirmed --------
+        if not self.clock_valid(ctx.now_utc, ctx.server_now):
+            violations.append(
+                "The MT5 server clock can't be read, so today's daily loss limit can't be confirmed. "
+                "Check SERVER_TIME_SYMBOL and that the terminal is receiving prices."
+            )
 
         # --- rate limit ------------------------------------------------------------
         n_actions = self.actions_in_window(ctx.now_utc)

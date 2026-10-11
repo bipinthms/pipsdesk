@@ -187,3 +187,30 @@ def test_journal_filter_and_paging(client):
     assert [e["status"] for e in journal(client, status="blocked")] == ["blocked"]
     newest = journal(client)[0]["id"]
     assert [e["status"] for e in journal(client, before_id=newest)] == ["accepted"]
+
+
+def test_closing_never_depends_on_the_server_clock_symbol(mock, clock, db):
+    """SERVER_TIME_SYMBOL missing on this broker: new risk is blocked, getting flat still works."""
+    from backend.config import Settings
+
+    s = Settings(_env_file=None, mt5_mock=True, extra_allowed_hosts="testserver", server_time_symbol="EURUSD.raw")
+    app = create_app(s, bridge=MT5Bridge(s, mt5=mock, clock=clock), db=db, clock=clock)
+    with TestClient(app) as c:
+        b = c.app.state.bridge
+        bid, ask = quote(c)
+        # Opened outside the app (terminal or phone).
+        p1 = b.market_order("EURUSD", "buy", 0.2, sl=round(bid - 0.0050, 5)).order
+        p2 = b.market_order("EURUSD", "buy", 0.2, sl=round(bid - 0.0050, 5)).order
+        o1 = b.pending_order("EURUSD", "buy_limit", 0.1, round(ask - 0.0030, 5), sl=round(ask - 0.0080, 5)).order
+        o2 = b.pending_order("EURUSD", "buy_limit", 0.1, round(ask - 0.0040, 5), sl=round(ask - 0.0090, 5)).order
+
+        r = market(c, volume=0.1)
+        assert r.status_code == 422 and "server clock" in r.json()["detail"]
+
+        assert c.patch(f"/positions/{p1}", json={"sl": round(bid - 0.0020, 5)}, headers=H).status_code == 200
+        assert c.delete(f"/positions/{p1}", params={"volume": 0.1}, headers=H).status_code == 200
+        assert c.delete(f"/positions/{p1}", headers=H).status_code == 200
+        assert c.delete(f"/orders/{o1}", headers=H).status_code == 200
+        flat = c.post("/positions/flatten", headers=H).json()
+        assert flat == {"closed": [p2], "cancelled": [o2], "errors": []}
+        assert c.get("/positions").json() == [] and c.get("/orders").json() == []
