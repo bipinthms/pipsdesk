@@ -171,3 +171,11 @@ def test_terminal_on_another_account_than_configured_blocks_new_orders(mock, clo
     assert "different account from MT5_LOGIN" in wrong.evaluate(intent).violations[0]
     right = RiskService(db, bridge, "EURUSD", clock=clock, expected_login=12_345_678)
     assert right.evaluate(intent).allowed
+
+
+def test_server_clock_offset_is_learned_and_saved(client, clock, db):
+    risk = client.app.state.risk
+    risk.server_now()
+    clock.advance(2)  # the mock's EURUSD ticks move with the clock
+    assert risk.server_now() == pytest.approx(clock.t + 3 * 3600)  # Europe/Athens in October
+    assert db.get_json("server_clock") == {"offset_s": 3 * 3600}

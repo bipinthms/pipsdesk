@@ -15,6 +15,7 @@ from collections.abc import Callable
 from backend import schemas
 from backend.db import Database, NewsEvent
 from backend.mt5_bridge import MT5Bridge, MT5Error, MT5Unavailable
+from backend.server_clock import ServerClock
 from backend.risk import (
     NEVER_BLOCKED,
     Exposure,
@@ -31,6 +32,7 @@ log = logging.getLogger(__name__)
 
 SETTINGS_KEY = "risk_settings"
 STATE_KEY = "risk_state"
+CLOCK_KEY = "server_clock"
 NEWS_LOOKBACK_S = 86_400
 WRONG_ACCOUNT = (
     "The terminal is logged into a different account from MT5_LOGIN in backend/.env. "
@@ -66,6 +68,13 @@ class RiskService:
         self._news: list[NewsEvent] = db.news_events()
         self._last_equity: float | None = None
         self._clock_error: str | None = None
+        saved_clock = db.get_json(CLOCK_KEY) or {}
+        self._server_clock = ServerClock(
+            self._read_server_tick,
+            clock,
+            saved_clock.get("offset_s"),
+            on_learned=lambda offset: db.set_json(CLOCK_KEY, {"offset_s": offset}),
+        )
         self._recent: list[tuple[Exposure, float]] = []  # (exposure, counted until)
 
     # -- context -------------------------------------------------------------
@@ -100,10 +109,15 @@ class RiskService:
         login, server = self._bridge.account_identity()
         return hashlib.sha256(f"{login}@{server.strip().lower()}".encode()).hexdigest()[:16], login
 
+    def _read_server_tick(self) -> tuple[int, int]:
+        t = self._bridge.tick(self._symbol)
+        return t.time, t.time_msc
+
     def server_now(self) -> float | None:
-        """The MT5 server clock, or None when it can't be read (e.g. SERVER_TIME_SYMBOL doesn't exist)."""
+        """The MT5 server clock (see server_clock.py), or None when it isn't known: no offset
+        learned yet and SERVER_TIME_SYMBOL can't be read."""
         try:
-            t = float(self._bridge.server_time(self._symbol))
+            t = self._server_clock.now()
         except MT5Unavailable:
             raise
         except MT5Error as exc:
@@ -113,6 +127,10 @@ class RiskService:
             return None
         self._clock_error = None
         return t
+
+    @property
+    def server_offset_s(self) -> float | None:
+        return self._server_clock.offset_s
 
     def _news_times(self, now: float) -> list[float]:
         return [float(e.time_utc) for e in self._news if e.time_utc >= now - NEWS_LOOKBACK_S]

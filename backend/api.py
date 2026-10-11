@@ -188,15 +188,10 @@ def get_db(request: Request) -> Database:
     return request.app.state.db
 
 
-def get_app_settings(request: Request) -> Settings:
-    return request.app.state.settings
-
-
 Bridge = Annotated[MT5Bridge, Depends(get_bridge)]
 Risk = Annotated[RiskService, Depends(get_risk)]
 Trading = Annotated[TradingService, Depends(get_trading)]
 Db = Annotated[Database, Depends(get_db)]
-AppSettings = Annotated[Settings, Depends(get_app_settings)]
 SymbolPath = Annotated[str, Path(pattern=schemas.SYMBOL_PATTERN)]
 _ERRORS = {
     404: {"model": schemas.ErrorResponse},
@@ -247,10 +242,9 @@ def _register_routes(app: FastAPI) -> None:
         return bridge.orders()
 
     @app.get("/history", response_model=list[schemas.Deal], responses=_ERRORS)
-    def history(
-        bridge: Bridge, settings: AppSettings, days: Annotated[int, Query(ge=1, le=365)] = 7
-    ) -> list[schemas.Deal]:
-        now = bridge.server_time(settings.server_time_symbol)
+    def history(bridge: Bridge, risk: Risk, days: Annotated[int, Query(ge=1, le=365)] = 7) -> list[schemas.Deal]:
+        # Deal times are server time. If the server clock isn't known, UTC + 14h covers any offset.
+        now = int(risk.server_now() or time.time() + 14 * 3600)
         deals = bridge.deals(now - days * 86_400, now + 86_400)
         return sorted(deals, key=lambda d: d.time, reverse=True)
 

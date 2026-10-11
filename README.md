@@ -120,7 +120,7 @@ Open **Settings** and do the following:
 1. Set **Initial balance** to the account size.
 2. Confirm the **daily loss** and **max drawdown** match your FundingPips rules, and that the **day reset** time matches their server day.
 3. Enter the **commission per lot** if your account is charged one.
-4. If the broker's symbols have suffixes (for example `EURUSD.raw`), set `SERVER_TIME_SYMBOL` in `.env` to a liquid symbol that exists. The app reads the server clock from its tick time.
+4. If the broker's symbols have suffixes (for example `EURUSD.raw`), set `SERVER_TIME_SYMBOL` in `.env` to a liquid symbol that exists. The app learns the server's offset from UTC from that symbol's ticks while they're moving, saves it, and keeps the server clock running from it when ticks stop (weekends, holidays). The log says `MT5 server clock is UTC+03:00` when it learns or updates the offset.
 
 ## Using the app
 
