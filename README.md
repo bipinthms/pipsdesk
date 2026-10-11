@@ -85,7 +85,7 @@ Install **Python 3.12 (x64)** from python.org and Node 20+. Then, in the project
 py -3.12 -m venv .venv
 .venv\Scripts\activate
 pip install -r backend\requirements.txt        # installs MetaTrader5 on Windows
-copy backend\.env.example backend\.env         # or copy your .env from the Mac
+copy backend\.env.example backend\.env         # start from the example, not the Mac's .env
 cd frontend; npm install; npm run build; cd ..
 ```
 
@@ -98,7 +98,10 @@ MT5_PASSWORD=<your password>
 MT5_SERVER=<exact server name, e.g. MetaQuotes-Demo>
 # MT5_PATH=C:\Program Files\MetaTrader 5\terminal64.exe   # only if several terminals are installed
 APP_HOST=127.0.0.1
+# Leave CORS_ORIGINS unset: in live mode only the app itself (port 8000) may call the API.
 ```
+
+`APP_HOST` must be a loopback address; the backend refuses to start otherwise.
 
 Run `python -m backend`. The log should say `Connected to MT5 terminal`, and the header badge shows **LIVE · DEMO**. On a real-money account it shows **LIVE · REAL** in red.
 
@@ -109,10 +112,11 @@ Run `python -m backend`. The log should say `Connected to MT5 terminal`, and the
 Keep the backend bound to `127.0.0.1` on Windows; don't open port 8000 to the network. Enable OpenSSH Server on Windows (**Settings → System → Optional features**), then on the Mac:
 
 ```bash
-ssh -N -L 8000:127.0.0.1:8000 <windows-user>@<vm-or-vps-address>
+ssh -N -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 -o ServerAliveCountMax=3 \
+    -L 8000:127.0.0.1:8000 <windows-user>@<vm-or-vps-address>
 ```
 
-Open **http://127.0.0.1:8000** on the Mac.
+Open **http://127.0.0.1:8000** on the Mac and check the badge says **LIVE**. Stop any local mock backend first: if something on the Mac already uses port 8000, `ExitOnForwardFailure` makes ssh exit instead of silently leaving you on the mock. `ServerAliveInterval` drops a dead tunnel within about 45 seconds, and the UI then shows "Backend offline".
 
 ### 5. Before your first live trade
 

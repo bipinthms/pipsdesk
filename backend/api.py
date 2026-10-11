@@ -120,6 +120,9 @@ def create_app(
 
     app = FastAPI(title="Trading Desk API", version="0.1.0", lifespan=lifespan)
     app.state.settings = settings
+    if not settings.mt5_mock and settings.cors_origins:
+        log.warning("Live mode with extra trusted browser origins (CORS_ORIGINS=%s). Any page served "
+                    "there can place orders; unset it unless you run the Vite dev server.", settings.cors_origins)
 
     app.add_middleware(
         CORSMiddleware,

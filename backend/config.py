@@ -10,10 +10,13 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import Field, SecretStr, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 BACKEND_DIR = Path(__file__).resolve().parent
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "::1")
+# The Vite dev server (`npm run dev`). Trusted by default in mock mode only.
+DEV_UI_ORIGINS = "http://localhost:5173,http://127.0.0.1:5173"
 
 
 class Settings(BaseSettings):
@@ -34,10 +37,12 @@ class Settings(BaseSettings):
     mt5_timeout_ms: int = 10_000
 
     # --- HTTP server -------------------------------------------------------
+    # Loopback only: the API places orders and has no login. Reach it through an SSH tunnel.
     app_host: str = "127.0.0.1"
     app_port: int = 8000
-    # Comma-separated list of browser origins allowed to call the API.
-    cors_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+    # Extra browser origins allowed to call the API, comma-separated (the app's own origin
+    # always is). Unset: the Vite dev server in mock mode, nothing extra in live mode.
+    cors_origins: str | None = None
     # Extra Host header values accepted besides localhost/127.0.0.1.
     extra_allowed_hosts: str = ""
 
@@ -61,6 +66,16 @@ class Settings(BaseSettings):
     mock_initial_balance: float = Field(default=100_000.0, gt=0)
 
     log_level: str = "INFO"
+
+    @field_validator("app_host")
+    @classmethod
+    def _loopback_only(cls, v: str) -> str:
+        if v.strip() not in LOOPBACK_HOSTS:
+            raise ValueError(
+                f"APP_HOST must be a loopback address ({', '.join(LOOPBACK_HOSTS)}): the API can place orders "
+                "and has no login. Reach it from another machine through an SSH tunnel."
+            )
+        return v.strip()
 
     @model_validator(mode="after")
     def _check_live_requirements(self) -> Settings:
@@ -88,7 +103,8 @@ class Settings(BaseSettings):
     def cors_origin_list(self) -> list[str]:
         """UI origins: the Vite dev server(s), plus this server itself when it serves the built UI."""
         own = [f"http://127.0.0.1:{self.app_port}", f"http://localhost:{self.app_port}"]
-        listed = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        configured = self.cors_origins if self.cors_origins is not None else (DEV_UI_ORIGINS if self.mt5_mock else "")
+        listed = [o.strip() for o in configured.split(",") if o.strip()]
         return listed + [o for o in own if o not in listed]
 
     @property
