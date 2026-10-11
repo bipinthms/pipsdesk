@@ -11,7 +11,7 @@ H = {"X-Requested-With": "trading-ui"}
 
 @pytest.fixture
 def client(settings, mock, clock, db):
-    with TestClient(create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db)) as c:
+    with TestClient(create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db, clock=clock)) as c:
         yield c
 
 

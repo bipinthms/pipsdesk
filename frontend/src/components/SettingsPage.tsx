@@ -29,7 +29,7 @@ const SECTIONS: [string, FieldDef[]][] = [
     { key: 'daily_loss_pct', label: 'Max daily loss', kind: 'number', step: 0.1, suffix: '%', looser: 'up' },
     { key: 'daily_loss_basis', label: 'Measured from', kind: 'select', options: [
       ['higher_of_balance_equity', 'Higher of balance / equity at reset'], ['balance', 'Balance at reset'], ['equity', 'Equity at reset']] },
-    { key: 'day_reset_time', label: 'Day resets at', kind: 'text', hint: 'HH:MM' },
+    { key: 'day_reset_time', label: 'Day resets at', kind: 'text', hint: 'HH:MM. A change starts at the next reset; today keeps its anchor.' },
     { key: 'day_reset_timezone', label: 'Reset timezone', kind: 'text', hint: '"server" = MT5 server clock, or an IANA zone like Europe/Prague' },
   ]],
   ['Max drawdown', [

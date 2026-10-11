@@ -159,7 +159,7 @@ def client(mock, clock, db):
     from backend.config import Settings
 
     s = Settings(_env_file=None, mt5_mock=True, extra_allowed_hosts="testserver", stream_interval_ms=100)
-    app = create_app(s, bridge=MT5Bridge(s, mt5=mock, clock=clock), db=db)
+    app = create_app(s, bridge=MT5Bridge(s, mt5=mock, clock=clock), db=db, clock=clock)
     with TestClient(app) as c:
         yield c
 

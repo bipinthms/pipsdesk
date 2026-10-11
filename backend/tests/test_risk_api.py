@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import time
-
 import pytest
 from fastapi.testclient import TestClient
 
@@ -15,7 +13,7 @@ CSRF = {"X-Requested-With": "trading-ui"}
 
 @pytest.fixture
 def app(settings, mock, clock, db):
-    return create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db)
+    return create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db, clock=clock)
 
 
 @pytest.fixture
@@ -46,7 +44,7 @@ def test_settings_validated_persisted_and_journaled(client, settings, mock, cloc
     assert entry.action == "settings" and "daily_loss_pct" in entry.reason
 
     # A fresh app on the same DB sees the saved settings.
-    with TestClient(create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db)) as c2:
+    with TestClient(create_app(settings, bridge=MT5Bridge(settings, mt5=mock, clock=clock), db=db, clock=clock)) as c2:
         assert c2.get("/risk/settings").json()["daily_loss_pct"] == 4.0
 
 
@@ -96,12 +94,12 @@ def test_check_unknown_symbol_is_404(client):
     assert r.status_code == 404
 
 
-def test_news_crud_and_blackout(client):
+def test_news_crud_and_blackout(client, clock):
     bid, ask = eurusd(client)
     order = {"action": "open", "symbol": "EURUSD", "side": "buy", "volume": 0.1, "sl": round(ask - 0.0050, 5)}
     assert client.post("/risk/check", json=order, headers=CSRF).json()["allowed"]
 
-    r = client.post("/risk/news", json={"time_utc": int(time.time()) + 30, "title": "NFP"}, headers=CSRF)
+    r = client.post("/risk/news", json={"time_utc": int(clock.t) + 30, "title": "NFP"}, headers=CSRF)
     assert r.status_code == 201
     event = r.json()
     assert client.get("/risk/news").json() == [event]

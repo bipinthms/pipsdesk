@@ -14,7 +14,7 @@ H = {"X-Requested-With": "trading-ui"}
 
 def make(mock, clock, db, **overrides):
     s = Settings(_env_file=None, mt5_mock=True, extra_allowed_hosts="testserver", **overrides)
-    return TestClient(create_app(s, bridge=MT5Bridge(s, mt5=mock, clock=clock), db=db))
+    return TestClient(create_app(s, bridge=MT5Bridge(s, mt5=mock, clock=clock), db=db, clock=clock))
 
 
 @pytest.fixture

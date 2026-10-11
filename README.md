@@ -197,7 +197,7 @@ Every order action passes `RiskEngine.evaluate` (`backend/risk.py`) before it re
 | Rule | Default | Notes |
 |---|---|---|
 | Daily loss | 5% | Of the higher of balance or equity at the day reset (configurable basis) |
-| Day reset | 00:00 server time | Any `HH:MM` and timezone (`server` or an IANA timezone name such as `Europe/Prague`) |
+| Day reset | 00:00 server time | Any `HH:MM` and timezone (`server` or an IANA timezone name such as `Europe/Prague`). The trading day only moves forward, and a changed schedule starts at its next reset, so the day's anchor is never re-taken mid-day |
 | Max drawdown | 10%, static | From **Initial balance**. `trailing` mode follows the equity high-water mark |
 | Worst case | always on | Blocks an order if every open SL, every pending order filled then stopped, and this order's SL (plus commission) together would breach either limit |
 | Risk per trade | 1% of balance | A stop loss is required unless explicitly overridden per order |

@@ -249,6 +249,80 @@ class TestDayReset:
         e2.observe(96_000, 96_000, NOW + 60, SERVER + 60)
         assert e2.daily_base() == BAL
 
+    def test_state_saved_before_schedules_were_recorded_keeps_anchor(self):
+        e = make(state=RiskState(day_key="2026-10-12", day_start_balance=BAL, day_start_equity=BAL))
+        e.observe(96_000, 96_000, NOW, SERVER)
+        assert e.daily_base() == BAL and e.state.day_schedule == "00:00@server"
+
+
+def _down_4pct_at_1300() -> RiskEngine:
+    """Anchored at 100k (server 13:00), then 4% lost the same day."""
+    e = make()
+    e.observe(BAL, BAL, NOW, SERVER)
+    e.observe(96_000, 96_000, NOW + 60, SERVER + 60)
+    assert e.floors()[0] == pytest.approx(95_000)
+    return e
+
+
+class TestDayAnchorNeverMovesBack:
+    """The daily floor must never drop mid-day because the day key moved backwards."""
+
+    @pytest.mark.parametrize(
+        "change", [{"day_reset_time": "14:00"}, {"day_reset_timezone": "America/New_York", "day_reset_time": "17:00"}]
+    )
+    def test_schedule_change_keeps_todays_anchor(self, change):
+        e = _down_4pct_at_1300()
+        e.settings = RiskSettings(initial_balance=BAL, news_blackout_enabled=False, **change)
+        e.observe(96_000, 96_000, NOW + 120, SERVER + 120)
+        assert e.floors()[0] == pytest.approx(95_000)
+
+    def test_new_schedule_starts_at_its_next_reset(self):
+        e = _down_4pct_at_1300()
+        e.settings = RiskSettings(initial_balance=BAL, news_blackout_enabled=False, day_reset_time="14:00")
+        e.observe(96_000, 96_000, NOW + 120, SERVER + 120)  # 13:02 server
+        hour = 3600  # 14:00:00 server
+        e.observe(96_500, 96_500, NOW + hour, SERVER + hour)
+        assert e.daily_base() == 96_500 and e.state.day_anchor_late is False
+
+    def test_moving_the_reset_earlier_waits_for_tomorrow(self):
+        e = _down_4pct_at_1300()
+        e.settings = RiskSettings(initial_balance=BAL, news_blackout_enabled=False, day_reset_time="06:00")
+        for dt in (120, 6 * 3600, 16 * 3600):  # 13:02, 19:00, then 05:00 next day
+            e.observe(96_000, 96_000, NOW + dt, SERVER + dt)
+            assert e.floors()[0] == pytest.approx(95_000)
+        six_am = 17 * 3600  # 06:00 next day
+        e.observe(96_000, 96_000, NOW + six_am, SERVER + six_am)
+        assert e.daily_base() == 96_000
+
+    @pytest.mark.parametrize("bad_server_time", [0.0, -1.0, SERVER - 86_400, SERVER + 86_400])
+    def test_implausible_server_clock_is_ignored(self, bad_server_time):
+        e = _down_4pct_at_1300()
+        e.observe(96_000, 96_000, NOW + 120, bad_server_time)
+        e.observe(96_000, 96_000, NOW + 180, SERVER + 180)
+        assert e.floors()[0] == pytest.approx(95_000) and e.state.day_key == "2026-10-12"
+
+    def test_none_server_clock_is_ignored(self):
+        e = _down_4pct_at_1300()
+        e.observe(96_000, 96_000, NOW + 120, None)
+        assert e.floors()[0] == pytest.approx(95_000)
+
+    def test_repeated_hour_when_clocks_go_back_does_not_reanchor(self):
+        # Europe/Prague leaves summer time on 2026-10-25: 03:00 CEST -> 02:00 CET, so 02:00-03:00 happens twice.
+        e = make(day_reset_time="02:30", day_reset_timezone="Europe/Prague")
+        first = datetime(2026, 10, 25, 0, 30, tzinfo=UTC).timestamp()  # 02:30 CEST
+        e.observe(BAL, BAL, first, first)
+        assert e.state.day_key == "2026-10-25"
+        anchor = e.state.day_anchor_time_utc
+        for minutes in (45, 60, 75):  # 02:15, 02:30, 02:45 CET: the same wall-clock times again
+            t = first + minutes * 60
+            e.observe(96_000, 96_000, t, t)
+        assert e.state.day_anchor_time_utc == anchor and e.daily_base() == BAL
+
+    def test_iana_reset_does_not_need_the_server_clock(self):
+        e = make(day_reset_timezone="Europe/Prague")
+        e.observe(BAL, BAL, NOW, None)
+        assert e.state.day_key == "2026-10-12"
+
 
 class TestDrawdown:
     def test_static_floor(self):

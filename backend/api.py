@@ -22,7 +22,8 @@ import asyncio
 import contextlib
 import json
 import logging
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from typing import Annotated, Literal
 
@@ -80,8 +81,12 @@ async def _supervise(bridge: MT5Bridge, risk: RiskService) -> None:
 
 
 def create_app(
-    settings: Settings | None = None, bridge: MT5Bridge | None = None, db: Database | None = None
+    settings: Settings | None = None,
+    bridge: MT5Bridge | None = None,
+    db: Database | None = None,
+    clock: Callable[[], float] = time.time,
 ) -> FastAPI:
+    """`clock` is the UTC wall clock the risk engine uses (tests pass the mock terminal's clock)."""
     settings = settings or get_settings()
 
     @asynccontextmanager
@@ -89,7 +94,7 @@ def create_app(
         b = bridge or MT5Bridge(settings)
         app.state.bridge = b
         database = db or Database(settings.db_path)
-        risk = RiskService(database, b, settings.server_time_symbol)
+        risk = RiskService(database, b, settings.server_time_symbol, clock=clock)
         hub = StreamHub(b, settings.stream_interval_ms / 1000, risk)
         app.state.db = database
         app.state.risk = risk

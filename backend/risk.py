@@ -40,6 +40,9 @@ ProfitCalc = Callable[[Side, str, float, float, float], float]
 EPS = 0.005  # half a cent: tolerance for money comparisons
 RATE_WINDOW_S = 60.0
 LATE_ANCHOR_S = 300.0  # anchors captured >5 min after the reset are flagged
+# Real UTC offsets run from -12h to +14h. A server clock further from UTC than this
+# is a bad reading (a zero or very old tick), not a time zone.
+MAX_SERVER_OFFSET_S = 14 * 3600
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +88,8 @@ class RiskState(BaseModel):
     """Values the engine must remember across restarts."""
 
     day_key: str | None = None
+    # Reset schedule ("HH:MM@zone") that `day_key` was computed under.
+    day_schedule: str | None = None
     day_start_balance: float | None = None
     day_start_equity: float | None = None
     day_anchor_time_utc: float | None = None
@@ -210,19 +215,42 @@ class RiskEngine:
         midnight = shifted.replace(hour=0, minute=0, second=0, microsecond=0)
         return shifted.date().isoformat(), (shifted - midnight).total_seconds()
 
-    def observe(self, balance: float, equity: float, now_utc: float, server_now: float) -> bool:
-        """Update day anchor, high-water mark and observed initial balance. Returns True if state changed."""
+    def _schedule(self) -> str:
+        return f"{self.settings.day_reset_time}@{self.settings.day_reset_timezone}"
+
+    def clock_valid(self, now_utc: float, server_now: float | None) -> bool:
+        """Can the trading day be worked out from these clocks?"""
+        if self.settings.day_reset_timezone != "server":
+            return True
+        return server_now is not None and abs(server_now - now_utc) <= MAX_SERVER_OFFSET_S
+
+    def observe(self, balance: float, equity: float, now_utc: float, server_now: float | None) -> bool:
+        """Update day anchor, high-water mark and observed initial balance. Returns True if state changed.
+
+        The trading day only ever moves forward. A day key older than the stored one
+        (a stale or zero tick, or the repeated hour when clocks go back) is ignored,
+        so the anchor can never be re-taken in the middle of a day at a lower equity.
+        """
         st = self.state
         before = st.model_copy()
         if st.initial_balance_observed is None:
             st.initial_balance_observed = balance
-        key, since_reset = self.day_key(now_utc, server_now)
-        if key != st.day_key:
-            st.day_key = key
-            st.day_start_balance = balance
-            st.day_start_equity = equity
-            st.day_anchor_time_utc = now_utc
-            st.day_anchor_late = since_reset > LATE_ANCHOR_S
+        if self.clock_valid(now_utc, server_now):
+            key, since_reset = self.day_key(now_utc, server_now or 0.0)
+            schedule = self._schedule()
+            if st.day_schedule is None:
+                st.day_schedule = schedule  # state saved before schedules were recorded
+            if st.day_key is not None and st.day_schedule != schedule:
+                # Reset time or zone changed: keep today's anchor. The new schedule's
+                # first reset comes at its next reset time, never at the moment of the edit.
+                st.day_key = key
+                st.day_schedule = schedule
+            elif st.day_key is None or key > st.day_key:
+                st.day_key = key
+                st.day_start_balance = balance
+                st.day_start_equity = equity
+                st.day_anchor_time_utc = now_utc
+                st.day_anchor_late = since_reset > LATE_ANCHOR_S
         st.high_water_equity = max(st.high_water_equity or equity, equity)
         return st != before
 
