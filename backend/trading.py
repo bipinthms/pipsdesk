@@ -32,6 +32,7 @@ from backend.mt5_bridge import (
     MT5Error,
     OrderOutcomeUnknown,
     TradeRejected,
+    WorkingOrder,
 )
 from backend.risk import Exposure, OrderIntent, RiskDecision
 from backend.risk_service import RiskService
@@ -215,7 +216,15 @@ class TradingService:
         return p
 
     def _find_order(self, ticket: int) -> schemas.PendingOrder:
+        """A limit or stop order: the only kinds this app places or modifies."""
         o = next((o for o in self._bridge.orders() if o.ticket == ticket), None)
+        if o is None:
+            raise TradeRejected(RETCODE_MESSAGES[10035], 10035)
+        return o
+
+    def _find_working_order(self, ticket: int) -> WorkingOrder:
+        """Any cancellable order, including stop-limits placed from the terminal or phone."""
+        o = next((o for o in self._bridge.working_orders() if o.ticket == ticket), None)
         if o is None:
             raise TradeRejected(RETCODE_MESSAGES[10035], 10035)
         return o
@@ -305,9 +314,9 @@ class TradingService:
         return self._execute(intent, lambda: self._bridge.close_position(ticket, volume), journal)
 
     def cancel_order(self, ticket: int, note: str = "") -> schemas.TradeResponse:
-        o = self._find_order(ticket)
+        o = self._find_working_order(ticket)
         intent = OrderIntent("cancel", o.symbol, ticket=ticket)
-        journal = {"symbol": o.symbol, "volume": o.volume, "price": o.price_open, "ticket": ticket, "note": note}
+        journal = {"symbol": o.symbol, "volume": o.volume, "price": o.price, "ticket": ticket, "note": note}
         return self._execute(intent, lambda: self._bridge.cancel_order(ticket), journal)
 
     def flatten(self) -> schemas.FlattenResponse:
@@ -315,7 +324,7 @@ class TradingService:
         closed: list[int] = []
         cancelled: list[int] = []
         errors: list[str] = []
-        for o in self._bridge.orders():
+        for o in self._bridge.working_orders():
             try:
                 self.cancel_order(o.ticket, note="flatten all")
                 cancelled.append(o.ticket)

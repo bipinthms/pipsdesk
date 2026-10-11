@@ -406,3 +406,31 @@ def test_modifications_are_snapped_too(client):
     assert client.get("/positions").json()[0]["sl"] == pos["sl"] + 10.25
     r = client.delete(f"/positions/{pos['ticket']}", params={"volume": 0.15}, headers=H)
     assert r.status_code == 200 and client.get("/positions").json()[0]["volume"] == pytest.approx(0.1)
+
+
+def _stop_limit_from_the_terminal(mock, client, volume=0.5):
+    """A buy stop-limit placed outside the app: triggers 20 pips up, then rests as a limit 10 pips below."""
+    bid, ask = quote(client)
+    r = mock.order_send({"action": mock.TRADE_ACTION_PENDING, "symbol": "EURUSD", "volume": volume,
+                         "type": mock.ORDER_TYPE_BUY_STOP_LIMIT, "price": round(ask + 0.0020, 5),
+                         "stoplimit": round(ask + 0.0010, 5), "sl": round(ask - 0.0040, 5)})
+    assert r.retcode == mock.TRADE_RETCODE_DONE
+    return r.order, round(ask + 0.0010, 5)
+
+
+def test_stop_limit_orders_count_as_exposure(client, mock):
+    ticket, limit = _stop_limit_from_the_terminal(mock, client)
+    (o,) = client.app.state.bridge.working_orders()
+    assert (o.ticket, o.price, o.pending_type, o.side) == (ticket, limit, None, "buy")
+    assert client.get("/orders").json() == []  # the UI list only shows the types it can edit
+    s = client.get("/risk/settings").json()
+    client.put("/risk/settings", json={**s, "max_open_positions": 1}, headers=H)
+    r = market(client, volume=0.1)
+    assert r.status_code == 422 and "Max open positions" in r.json()["detail"]
+
+
+def test_flatten_cancels_stop_limit_orders_too(client, mock):
+    ticket, _ = _stop_limit_from_the_terminal(mock, client)
+    r = client.post("/positions/flatten", headers=H).json()
+    assert r == {"closed": [], "cancelled": [ticket], "errors": []}
+    assert client.app.state.bridge.working_orders() == []

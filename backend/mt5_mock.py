@@ -49,6 +49,9 @@ ORDER_TYPE_BUY_LIMIT = 2
 ORDER_TYPE_SELL_LIMIT = 3
 ORDER_TYPE_BUY_STOP = 4
 ORDER_TYPE_SELL_STOP = 5
+ORDER_TYPE_BUY_STOP_LIMIT = 6
+ORDER_TYPE_SELL_STOP_LIMIT = 7
+_BUY_ORDERS = (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP, ORDER_TYPE_BUY_STOP_LIMIT)
 
 POSITION_TYPE_BUY = 0
 POSITION_TYPE_SELL = 1
@@ -304,6 +307,7 @@ class _Order:
     time_setup: int
     magic: int
     comment: str
+    price_stoplimit: float = 0.0  # stop-limit orders: the limit price placed once triggered
 
 
 class _State:
@@ -636,11 +640,11 @@ def _pos_tuple(p: _Position, now: float):
 
 def _order_tuple(o: _Order, now: float):
     bid, ask = _quote(_SPECS[o.symbol], now)
-    current = ask if o.type in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP) else bid
+    current = ask if o.type in _BUY_ORDERS else bid
     return TradeOrder(
         o.ticket, o.time_setup, o.time_setup * 1000, 0, 0, 0, o.type, ORDER_TIME_GTC,
         ORDER_FILLING_RETURN, ORDER_STATE_PLACED, o.magic, 0, 0, 0, o.volume, o.volume,
-        o.price_open, o.sl, o.tp, current, 0.0, o.symbol, o.comment, "",
+        o.price_open, o.sl, o.tp, current, o.price_stoplimit, o.symbol, o.comment, "",
     )
 
 
@@ -794,11 +798,18 @@ def _process() -> None:
             ORDER_TYPE_SELL_LIMIT: bid >= o.price_open,
             ORDER_TYPE_BUY_STOP: ask >= o.price_open,
             ORDER_TYPE_SELL_STOP: bid <= o.price_open,
+            ORDER_TYPE_BUY_STOP_LIMIT: ask >= o.price_open,
+            ORDER_TYPE_SELL_STOP_LIMIT: bid <= o.price_open,
         }[o.type]
         if not hit:
             continue
+        if o.type in (ORDER_TYPE_BUY_STOP_LIMIT, ORDER_TYPE_SELL_STOP_LIMIT):
+            # Triggered: becomes a limit order at the stop-limit price.
+            o.type = ORDER_TYPE_BUY_LIMIT if o.type == ORDER_TYPE_BUY_STOP_LIMIT else ORDER_TYPE_SELL_LIMIT
+            o.price_open, o.price_stoplimit = o.price_stoplimit, 0.0
+            continue
         del _S.orders[o.ticket]
-        side = POSITION_TYPE_BUY if o.type in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP) else POSITION_TYPE_SELL
+        side = POSITION_TYPE_BUY if o.type in _BUY_ORDERS else POSITION_TYPE_SELL
         price = ask if side == POSITION_TYPE_BUY else bid
         equity = _S.balance + _totals(now)[0]
         if equity - _totals(now)[1] - _margin(o.symbol, o.volume, price, now) < 0:
@@ -915,19 +926,24 @@ def order_send(request: dict):
                            price=price, bid=bid, ask=ask, comment="Request executed")
 
         if action == TRADE_ACTION_PENDING:
-            if otype not in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT, ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP):
+            if otype not in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT, ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP,
+                             ORDER_TYPE_BUY_STOP_LIMIT, ORDER_TYPE_SELL_STOP_LIMIT):
                 return _result(TRADE_RETCODE_INVALID, request, comment="Invalid request")
+            stoplimit = float(request.get("stoplimit") or 0.0)
+            if otype in (ORDER_TYPE_BUY_STOP_LIMIT, ORDER_TYPE_SELL_STOP_LIMIT) and not (stoplimit and _on_grid(spec, stoplimit)):
+                return _result(TRADE_RETCODE_INVALID_PRICE, request, bid=bid, ask=ask, comment="Invalid price")
             if not _volume_ok(spec, volume):
                 return _result(TRADE_RETCODE_INVALID_VOLUME, request, comment="Invalid volume")
             price = float(request.get("price") or 0.0)
             if not _on_grid(spec, price) or not _pending_price_ok(spec, otype, _on_tick(spec, price), bid, ask):
                 return _result(TRADE_RETCODE_INVALID_PRICE, request, bid=bid, ask=ask, comment="Invalid price")
             price = _on_tick(spec, price)
-            buy = otype in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP)
-            if not _stops_ok(spec, buy, sl, tp, price):
+            buy = otype in _BUY_ORDERS
+            if not _stops_ok(spec, buy, sl, tp, stoplimit or price):
                 return _result(TRADE_RETCODE_INVALID_STOPS, request, bid=bid, ask=ask, comment="Invalid stops")
             ticket = _S.ticket()
-            _S.orders[ticket] = _Order(ticket, symbol, otype, volume, price, sl, tp, int(now), magic, comment)
+            _S.orders[ticket] = _Order(ticket, symbol, otype, volume, price, sl, tp, int(now), magic, comment,
+                                       _on_tick(spec, stoplimit) if stoplimit else 0.0)
             return _result(TRADE_RETCODE_DONE, request, order=ticket, volume=volume, price=price,
                            bid=bid, ask=ask, comment="Request executed")
 
@@ -955,7 +971,7 @@ def order_send(request: dict):
                 return _result(TRADE_RETCODE_NO_CHANGES, request, comment="No changes")
             if not _pending_price_ok(spec, o.type, price, bid, ask):
                 return _result(TRADE_RETCODE_INVALID_PRICE, request, bid=bid, ask=ask, comment="Invalid price")
-            buy = o.type in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_BUY_STOP)
+            buy = o.type in _BUY_ORDERS
             if not _stops_ok(spec, buy, sl, tp, price):
                 return _result(TRADE_RETCODE_INVALID_STOPS, request, bid=bid, ask=ask, comment="Invalid stops")
             o.price_open, o.sl, o.tp = price, sl, tp
@@ -979,4 +995,6 @@ def _pending_price_ok(spec: _Spec, otype: int, price: float, bid: float, ask: fl
         ORDER_TYPE_SELL_LIMIT: price >= bid + lvl,
         ORDER_TYPE_BUY_STOP: price >= ask + lvl,
         ORDER_TYPE_SELL_STOP: price <= bid - lvl,
+        ORDER_TYPE_BUY_STOP_LIMIT: price >= ask + lvl,
+        ORDER_TYPE_SELL_STOP_LIMIT: price <= bid - lvl,
     }[otype]

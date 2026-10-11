@@ -91,8 +91,8 @@ class RiskService:
             Exposure("position", p.ticket, p.symbol, p.side, p.volume, p.price_open, p.sl, p.profit + p.swap, p.swap)
             for p in b.positions()
         ] + [
-            Exposure("pending", o.ticket, o.symbol, "buy" if o.type.startswith("buy") else "sell", o.volume, o.price_open, o.sl)
-            for o in b.orders()
+            Exposure("pending", o.ticket, o.symbol, o.side, o.volume, o.price, o.sl)
+            for o in b.working_orders()
         ]
         now = self._clock()
         exposures += self._unlisted_recent(exposures, now)

@@ -18,6 +18,7 @@ import logging
 import threading
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from types import ModuleType
 from typing import Any
 
@@ -167,6 +168,23 @@ TIMEFRAME_SECONDS: dict[str, int] = {
 
 _PENDING_TYPES = {"buy_limit": 2, "sell_limit": 3, "buy_stop": 4, "sell_stop": 5}
 _PENDING_NAMES = {v: k for k, v in _PENDING_TYPES.items()}
+# Every order type that can become a position: market orders still in flight (0, 1), the
+# four pending types, and stop-limits (6, 7). Close-by orders (8) only reduce exposure.
+_ORDER_SIDES: dict[int, schemas.Side] = {0: "buy", 1: "sell", 2: "buy", 3: "sell", 4: "buy", 5: "sell", 6: "buy", 7: "sell"}
+_STOP_LIMIT = {6, 7}
+
+
+@dataclass(frozen=True)
+class WorkingOrder:
+    """Any order MT5 lists that can still open a position, wherever it was placed."""
+
+    ticket: int
+    symbol: str
+    side: schemas.Side
+    volume: float
+    price: float  # where it would fill: the limit price for a stop-limit
+    sl: float | None
+    pending_type: schemas.PendingType | None  # None for stop-limits and in-flight market orders
 _DEAL_REASONS = {0: "client", 1: "mobile", 2: "web", 3: "expert", 4: "sl", 5: "tp", 6: "stop_out"}
 # Deal types that move capital rather than trade: balance (deposit/withdrawal), credit, bonus.
 _CAPITAL_DEALS = {2, 3, 6}
@@ -494,6 +512,18 @@ class MT5Bridge:
             for o in raw
             if o.type in _PENDING_NAMES
         ]
+
+    def working_orders(self) -> list[WorkingOrder]:
+        """Every order that could still open a position, including types this app doesn't place
+        (stop-limits from the terminal or phone). The risk engine counts all of them."""
+        out = []
+        for o in self._call("orders_get"):
+            side = _ORDER_SIDES.get(o.type)
+            if side is None:
+                continue
+            price = o.price_stoplimit if o.type in _STOP_LIMIT and o.price_stoplimit else (o.price_open or o.price_current)
+            out.append(WorkingOrder(o.ticket, o.symbol, side, o.volume_current, price, _opt(o.sl), _PENDING_NAMES.get(o.type)))
+        return out
 
     def deals(self, date_from: int, date_to: int) -> list[schemas.Deal]:
         return self.deals_from(self._call("history_deals_get", date_from, date_to))
