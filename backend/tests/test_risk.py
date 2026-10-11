@@ -644,3 +644,14 @@ class TestWorstCaseAccuracy:
         e.observe(BAL, BAL, NOW, SERVER)
         held = Exposure("position", 1, "EURUSD", "buy", 1.0, 1.1000, 1.0950, floating_pnl=300.0, swap=300.0)
         assert e.evaluate(buy(volume=0.1), ctx(held)).worst_case_equity == pytest.approx(BAL - 500 - 50)
+
+
+def test_status_reads_the_rate_limit_without_changing_it():
+    """The stream thread reads the status without the risk lock: it must not mutate shared state."""
+    e = make()
+    for i in range(3):
+        e.record_action(NOW + i)
+    later = NOW + 61.5  # the first two have aged out
+    assert e.status(BAL, later).actions_last_minute == 1
+    assert len(e._actions) == 3  # untouched; only the locked paths trim the queue
+    assert e.actions_in_window(later) == 1 and len(e._actions) == 1

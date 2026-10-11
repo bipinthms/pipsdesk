@@ -398,7 +398,7 @@ class RiskEngine:
             day_start_rebuilt=self.state.day_start_rebuilt,
             initial_balance=initial,
             initial_balance_source=source,
-            actions_last_minute=self.actions_in_window(now_utc),
+            actions_last_minute=self.count_actions(now_utc),
             max_actions_per_minute=s.max_actions_per_minute,
             news_blackout_active=self._blackout_event(now_utc, news_times_utc) is not None,
             next_news_event_utc=min(upcoming) if upcoming else None,
@@ -411,6 +411,12 @@ class RiskEngine:
         """Call once for every request actually sent to MT5."""
         self._actions.append(now_utc)
         self.actions_in_window(now_utc)
+
+    def count_actions(self, now_utc: float) -> int:
+        """Like `actions_in_window`, without changing anything: safe from the stream thread,
+        which reads the status without holding the risk lock."""
+        cutoff = now_utc - RATE_WINDOW_S
+        return sum(1 for t in list(self._actions) if t > cutoff)  # list(): one atomic copy
 
     def actions_in_window(self, now_utc: float) -> int:
         while self._actions and self._actions[0] <= now_utc - RATE_WINDOW_S:
